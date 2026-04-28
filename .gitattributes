@@ -1,0 +1,9 @@
+# Normalize line endings in source and config files.
+* text=auto
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+.gitignore text eol=lf
