@@ -175,17 +175,13 @@ class PulseHelperTestCase(unittest.TestCase):
 
     def test_format_announce_add_change_is_clear(self):
         self.assertEqual(
-            pulse_plugin._format_announce_change(
-                "add", "#test", ["LimnoriaNews"]
-            ),
+            pulse_plugin._format_announce_change("add", "#test", ["LimnoriaNews"]),
             "Now announcing limnorianews in #test.",
         )
 
     def test_format_announce_remove_change_is_clear(self):
         self.assertEqual(
-            pulse_plugin._format_announce_change(
-                "remove", "#test", ["LimnoriaNews"]
-            ),
+            pulse_plugin._format_announce_change("remove", "#test", ["LimnoriaNews"]),
             "Stopped announcing limnorianews in #test.",
         )
 
@@ -194,7 +190,6 @@ class PulseHelperTestCase(unittest.TestCase):
             "If <channel> is omitted, Pulse uses the current channel",
             pulse_plugin.Pulse.announce.add.__doc__,
         )
-
 
 
 if __name__ == "__main__":
