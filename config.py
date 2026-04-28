@@ -58,18 +58,18 @@ conf.registerGlobalValue(
     "initialBackfillCount",
     registry.NonNegativeInteger(
         0,
-        _(
-            """Sets how many existing items Pulse announces when a feed is first added
+        _("""Sets how many existing items Pulse announces when a feed is first added
             to a channel's announce list. A value of 0 marks existing items as seen
-            without announcing them."""
-        ),
+            without announcing them."""),
     ),
 )
 
 conf.registerChannelValue(
     Pulse,
     "enabled",
-    registry.Boolean(False, _("""Determines whether Pulse announces in this channel.""")),
+    registry.Boolean(
+        False, _("""Determines whether Pulse announces in this channel.""")
+    ),
 )
 
 conf.registerChannelValue(
