@@ -1,8 +1,12 @@
 <!-- Pulse: RSS 2.0 feed and announcement plugin for Limnoria. -->
 
-<h1 align="center">Pulse</h1>
+# Pulse
 
-<p align="center">
+[![Tests](https://github.com/Alcheri/WorldTime/actions/workflows/tests.yml/badge.svg?branch=Limnoria-WorldTime)](https://github.com/Alcheri/WorldTime/actions/workflows/tests.yml)
+[![Lint](https://github.com/Alcheri/WorldTime/actions/workflows/lint.yml/badge.svg?branch=Limnoria-WorldTime)](https://github.com/Alcheri/WorldTime/actions/workflows/lint.yml)
+[![CodeQL](https://github.com/Alcheri/WorldTime/actions/workflows/codeql.yml/badge.svg?branch=Limnoria-WorldTime)](https://github.com/Alcheri/WorldTime/actions/workflows/codeql.yml)
+
+<p>
   <em>RSS 2.0 feed polling and announcement plugin for Limnoria.</em>
 </p>
 
