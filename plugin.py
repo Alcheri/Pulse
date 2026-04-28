@@ -82,7 +82,9 @@ def _stable_entry_id(guid="", link="", title="", description=""):
         return link
 
     basis = " ".join(
-        part for part in (_clean_text(title, 256), _clean_text(description, 256)) if part
+        part
+        for part in (_clean_text(title, 256), _clean_text(description, 256))
+        if part
     )
     if not basis:
         raise FeedError("Feed entry is missing guid, link, title, and description.")
@@ -345,7 +347,11 @@ class Pulse(callbacks.Plugin):
         return self.registryValue("headlineFormat", channel, network)
 
     def _render_entry(self, feed_name, entry, channel=None, network=None):
-        template = self._entry_template(channel, network) if channel else "$feed: $title <$link>"
+        template = (
+            self._entry_template(channel, network)
+            if channel
+            else "$feed: $title <$link>"
+        )
         rendered = string.Template(template).safe_substitute(
             feed=feed_name,
             title=entry["title"],
@@ -361,7 +367,9 @@ class Pulse(callbacks.Plugin):
             for channel in list(irc.state.channels):
                 if not self.registryValue("enabled", channel, irc.network):
                     continue
-                for feed_name in self.registryValue("announceFeeds", channel, irc.network):
+                for feed_name in self.registryValue(
+                    "announceFeeds", channel, irc.network
+                ):
                     name = callbacks.canonicalName(feed_name)
                     targets.setdefault(name, []).append((irc, channel))
         return targets
@@ -384,12 +392,16 @@ class Pulse(callbacks.Plugin):
         new_entries = [entry for entry in entries if entry["id"] not in seen_ids]
         if not new_entries:
             return []
-        self._mark_seen_ids(network, channel, feed_name, [entry["id"] for entry in new_entries])
+        self._mark_seen_ids(
+            network, channel, feed_name, [entry["id"] for entry in new_entries]
+        )
         maximum = self.registryValue("maximumAnnouncements", channel, network)
         return new_entries[:maximum]
 
     def _send_entry(self, irc, channel, feed_name, entry):
-        text = self._render_entry(feed_name, entry, channel=channel, network=irc.network)
+        text = self._render_entry(
+            feed_name, entry, channel=channel, network=irc.network
+        )
         if self.registryValue("announceAsNotice", channel, irc.network):
             irc.queueMsg(ircmsgs.notice(channel, text))
         else:
@@ -509,7 +521,9 @@ class Pulse(callbacks.Plugin):
 
         last_checked = record.get("last_checked", 0)
         if last_checked:
-            checked_text = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(last_checked))
+            checked_text = time.strftime(
+                "%Y-%m-%d %H:%M:%S UTC", time.gmtime(last_checked)
+            )
         else:
             checked_text = "never"
 
@@ -549,7 +563,10 @@ class Pulse(callbacks.Plugin):
             irc.error("The feed returned no items.", prefixNick=False)
             return
         irc.replies(
-            [self._render_entry(name, entry, msg.args[0], irc.network) for entry in items],
+            [
+                self._render_entry(name, entry, msg.args[0], irc.network)
+                for entry in items
+            ],
             joiner=" | ",
             prefixNick=False,
         )
@@ -603,7 +620,9 @@ class Pulse(callbacks.Plugin):
             """
             announce = conf.supybot.plugins.Pulse.announceFeeds
             feeds = sorted(announce.getSpecific(channel=channel, network=irc.network)())
-            irc.reply(format("%L", feeds) or "No feeds are announced there.", prefixNick=False)
+            irc.reply(
+                format("%L", feeds) or "No feeds are announced there.", prefixNick=False
+            )
 
         list = wrap(list, ["channel"])
 
@@ -632,9 +651,7 @@ class Pulse(callbacks.Plugin):
             for feed in feeds:
                 plugin._prime_subscription(irc, channel, callbacks.canonicalName(feed))
             plugin._flush_state()
-            irc.reply(
-                _format_announce_change("add", channel, feeds), prefixNick=False
-            )
+            irc.reply(_format_announce_change("add", channel, feeds), prefixNick=False)
 
         add = wrap(add, [("checkChannelCapability", "op"), many("feedName")])
 
