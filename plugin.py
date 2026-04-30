@@ -5,6 +5,7 @@
 #
 ###
 
+import builtins
 import hashlib
 import json
 import re
@@ -30,6 +31,7 @@ _ = PluginInternationalization("Pulse")
 USER_AGENT = "Limnoria-Pulse/0.1 (+https://github.com/Alcheri/Pulse)"
 FEEDS_FILENAME = conf.supybot.directories.data.dirize("Pulse.feeds.json")
 SEEN_FILENAME = conf.supybot.directories.data.dirize("Pulse.seen.json")
+LEGACY_FEEDS_NETWORK = "__legacy__"
 POLL_TICK_SECONDS = 5
 SEEN_ID_LIMIT = 200
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -99,6 +101,10 @@ def _format_announce_change(action, channel, feeds):
     if action == "remove":
         return f"Stopped announcing {format('%L', names)} in {channel}."
     raise ValueError(f"Unknown announce action: {action}")
+
+
+def _looks_like_feed_record(value):
+    return isinstance(value, dict) and isinstance(value.get("url"), str)
 
 
 def parse_rss2_feed(xml_bytes):
@@ -234,7 +240,10 @@ class Pulse(callbacks.Plugin):
     def _load_feeds(self):
         data = self._load_json_file(FEEDS_FILENAME, {})
         if isinstance(data, dict):
-            self._feeds = data
+            if builtins.any(_looks_like_feed_record(value) for value in data.values()):
+                self._feeds = {LEGACY_FEEDS_NETWORK: data}
+            else:
+                self._feeds = data
 
     def _load_seen(self):
         data = self._load_json_file(SEEN_FILENAME, {})
@@ -249,15 +258,31 @@ class Pulse(callbacks.Plugin):
     def _channel_key(self, network, channel):
         return f"{network}:{channel}"
 
-    def _get_feed_record(self, name):
-        return self._feeds.get(callbacks.canonicalName(name))
+    def _feed_key(self, network, name):
+        return (network, callbacks.canonicalName(name))
 
-    def _set_feed_record(self, name, record):
-        self._feeds[callbacks.canonicalName(name)] = record
+    def _network_feeds(self, network):
+        if network not in self._feeds and LEGACY_FEEDS_NETWORK in self._feeds:
+            self._feeds[network] = {
+                name: dict(record)
+                for name, record in self._feeds[LEGACY_FEEDS_NETWORK].items()
+                if _looks_like_feed_record(record)
+            }
+        return self._feeds.setdefault(network, {})
 
-    def _delete_feed_record(self, name):
-        self._feeds.pop(callbacks.canonicalName(name), None)
-        self._feed_cache.pop(callbacks.canonicalName(name), None)
+    def _get_feed_record(self, network, name):
+        return self._network_feeds(network).get(callbacks.canonicalName(name))
+
+    def _set_feed_record(self, network, name, record):
+        self._network_feeds(network)[callbacks.canonicalName(name)] = record
+
+    def _delete_feed_record(self, network, name):
+        feed_name = callbacks.canonicalName(name)
+        network_feeds = self._feeds.get(network, {})
+        network_feeds.pop(feed_name, None)
+        if not network_feeds and LEGACY_FEEDS_NETWORK not in self._feeds:
+            self._feeds.pop(network, None)
+        self._feed_cache.pop(self._feed_key(network, feed_name), None)
 
     def _mark_seen_ids(self, network, channel, feed_name, entry_ids):
         if not entry_ids:
@@ -283,9 +308,10 @@ class Pulse(callbacks.Plugin):
             if not channel_state:
                 self._seen.pop(channel_key, None)
 
-    def _refresh_feed(self, name, force=False):
+    def _refresh_feed(self, network, name, force=False):
         feed_name = callbacks.canonicalName(name)
-        record = self._get_feed_record(feed_name)
+        feed_key = self._feed_key(network, feed_name)
+        record = self._get_feed_record(network, feed_name)
         if not record:
             raise FeedError(f"Unknown feed: {feed_name}")
 
@@ -293,7 +319,7 @@ class Pulse(callbacks.Plugin):
         if not force:
             last_checked = float(record.get("last_checked", 0) or 0)
             if now - last_checked < self.registryValue("pollIntervalSeconds"):
-                cached = self._feed_cache.get(feed_name)
+                cached = self._feed_cache.get(feed_key)
                 if cached is not None:
                     return cached
 
@@ -306,7 +332,7 @@ class Pulse(callbacks.Plugin):
         )
 
         if result["status"] == 304:
-            cached = self._feed_cache.get(feed_name)
+            cached = self._feed_cache.get(feed_key)
             if cached is None:
                 result = fetch_rss_feed(
                     record["url"],
@@ -316,14 +342,14 @@ class Pulse(callbacks.Plugin):
             else:
                 record["last_checked"] = now
                 record["last_error"] = ""
-                self._set_feed_record(feed_name, record)
+                self._set_feed_record(network, feed_name, record)
                 return cached
 
         if result["status"] == 304:
             record["last_checked"] = now
             record["last_error"] = ""
-            self._set_feed_record(feed_name, record)
-            return self._feed_cache.get(feed_name, {"items": []})
+            self._set_feed_record(network, feed_name, record)
+            return self._feed_cache.get(feed_key, {"items": []})
 
         parsed = parse_rss2_feed(result["body"])
         record.update(
@@ -339,8 +365,8 @@ class Pulse(callbacks.Plugin):
                 "last_error": "",
             }
         )
-        self._set_feed_record(feed_name, record)
-        self._feed_cache[feed_name] = parsed
+        self._set_feed_record(network, feed_name, record)
+        self._feed_cache[feed_key] = parsed
         return parsed
 
     def _entry_template(self, channel, network):
@@ -371,11 +397,11 @@ class Pulse(callbacks.Plugin):
                     "announceFeeds", channel, irc.network
                 ):
                     name = callbacks.canonicalName(feed_name)
-                    targets.setdefault(name, []).append((irc, channel))
+                    targets.setdefault((irc.network, name), []).append((irc, channel))
         return targets
 
     def _prime_subscription(self, irc, channel, feed_name):
-        parsed = self._refresh_feed(feed_name, force=True)
+        parsed = self._refresh_feed(irc.network, feed_name, force=True)
         items = parsed["items"]
         backfill = self.registryValue("initialBackfillCount")
         unseen_ids = [item["id"] for item in items]
@@ -420,19 +446,21 @@ class Pulse(callbacks.Plugin):
             self._stop_event.wait(POLL_TICK_SECONDS)
 
     def _poll_announced_feeds(self):
-        for feed_name, destinations in self._current_targets().items():
-            if not self._get_feed_record(feed_name):
-                log.warning(f"Pulse: announced feed {feed_name} is not registered.")
+        for (network, feed_name), destinations in self._current_targets().items():
+            if not self._get_feed_record(network, feed_name):
+                log.warning(
+                    f"Pulse: announced feed {feed_name} is not registered on {network}."
+                )
                 continue
             try:
-                parsed = self._refresh_feed(feed_name, force=False)
+                parsed = self._refresh_feed(network, feed_name, force=False)
             except FeedError as e:
-                record = self._get_feed_record(feed_name) or {}
+                record = self._get_feed_record(network, feed_name) or {}
                 record["last_error"] = str(e)
                 record["last_checked"] = time.time()
                 if record:
-                    self._set_feed_record(feed_name, record)
-                log.warning(f"Pulse: failed to refresh {feed_name}: {e}")
+                    self._set_feed_record(network, feed_name, record)
+                log.warning(f"Pulse: failed to refresh {feed_name} on {network}: {e}")
                 continue
 
             for irc, channel in destinations:
@@ -449,7 +477,7 @@ class Pulse(callbacks.Plugin):
         and parsed.
         """
         name = callbacks.canonicalName(name)
-        if self._get_feed_record(name):
+        if self._get_feed_record(irc.network, name):
             irc.error(f"Feed {name} already exists.", prefixNick=False)
             return
 
@@ -460,6 +488,7 @@ class Pulse(callbacks.Plugin):
         )
         parsed = parse_rss2_feed(result["body"])
         self._set_feed_record(
+            irc.network,
             name,
             {
                 "url": url,
@@ -473,7 +502,7 @@ class Pulse(callbacks.Plugin):
                 "last_error": "",
             },
         )
-        self._feed_cache[name] = parsed
+        self._feed_cache[self._feed_key(irc.network, name)] = parsed
         self._flush_state()
         irc.reply(f"Added {name}: {parsed['title']}", prefixNick=False)
 
@@ -485,11 +514,14 @@ class Pulse(callbacks.Plugin):
         Removes a registered feed from Pulse.
         """
         name = callbacks.canonicalName(name)
-        if not self._get_feed_record(name):
+        if not self._get_feed_record(irc.network, name):
             irc.error("Unknown feed.", prefixNick=False)
             return
-        self._delete_feed_record(name)
+        self._delete_feed_record(irc.network, name)
+        prefix = f"{irc.network}:"
         for channel_key in list(self._seen.keys()):
+            if not channel_key.startswith(prefix):
+                continue
             self._seen[channel_key].pop(name, None)
             if not self._seen[channel_key]:
                 self._seen.pop(channel_key, None)
@@ -503,7 +535,7 @@ class Pulse(callbacks.Plugin):
 
         Lists the registered feeds known to Pulse.
         """
-        names = sorted(self._feeds)
+        names = sorted(self._network_feeds(irc.network))
         irc.reply(format("%L", names) or "No feeds are registered.", prefixNick=False)
 
     list = wrap(list)
@@ -514,7 +546,7 @@ class Pulse(callbacks.Plugin):
         Shows the stored metadata for a registered feed.
         """
         name = callbacks.canonicalName(name)
-        record = self._get_feed_record(name)
+        record = self._get_feed_record(irc.network, name)
         if not record:
             irc.error("Unknown feed.", prefixNick=False)
             return
@@ -553,7 +585,7 @@ class Pulse(callbacks.Plugin):
             return
 
         try:
-            parsed = self._refresh_feed(name, force=True)
+            parsed = self._refresh_feed(irc.network, name, force=True)
         except FeedError as e:
             irc.error(str(e), prefixNick=False)
             return
@@ -581,7 +613,7 @@ class Pulse(callbacks.Plugin):
         if name:
             feed_names = [callbacks.canonicalName(name)]
         else:
-            feed_names = sorted(self._feeds)
+            feed_names = sorted(self._network_feeds(irc.network))
         if not feed_names:
             irc.error("No feeds are registered.", prefixNick=False)
             return
@@ -590,7 +622,7 @@ class Pulse(callbacks.Plugin):
         failures = []
         for feed_name in feed_names:
             try:
-                self._refresh_feed(feed_name, force=True)
+                self._refresh_feed(irc.network, feed_name, force=True)
             except FeedError as e:
                 failures.append(f"{feed_name}: {e}")
                 continue
@@ -635,7 +667,9 @@ class Pulse(callbacks.Plugin):
             feed limnorianews here.'
             """
             plugin = irc.getCallback("Pulse")
-            invalid = [feed for feed in feeds if not plugin._get_feed_record(feed)]
+            invalid = [
+                feed for feed in feeds if not plugin._get_feed_record(irc.network, feed)
+            ]
             if invalid:
                 irc.error(format("Unknown feeds: %L", invalid), prefixNick=False)
                 return

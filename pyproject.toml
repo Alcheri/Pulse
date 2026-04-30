@@ -31,6 +31,9 @@ extend-exclude = '''
 )/
 '''
 
+[tool.pytest.ini_options]
+python_files = ["test.py"]
+
 [tool.setuptools.package-dir]
 "limnoria_pulse" = "."
 "limnoria_pulse.local" = "local/"

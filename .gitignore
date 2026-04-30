@@ -5,12 +5,15 @@ local/__pycache__/
 .pytest_cache/
 CACHEDIR.TAG
 
+# Codex files
+*.codex
+
 # Virtual environments
 .venv/
 venv/
 env/
 
-# Supybot runtime files
+# supybot
 backup/
 conf/
 logs/
@@ -32,3 +35,6 @@ Thumbs.db
 # Logs and diagram sources
 *.mmd
 *.log
+
+# To-Do files
+To-Do.txt

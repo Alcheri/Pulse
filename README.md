@@ -12,7 +12,7 @@
 
 ## Features
 
-- Registers named RSS 2.0 feeds for later use
+- Registers named RSS 2.0 feeds per bot network for later use
 - Fetches the latest feed items on demand
 - Announces new feed items to configured channels
 - Persists registered feeds and seen item IDs across reloads
@@ -46,7 +46,7 @@ Enable Pulse for a channel:
 config channel #channel plugins.Pulse.enabled True
 ```
 
-Add a feed:
+Add a feed on the current bot network:
 
 ```text
 @pulse add xkcd https://xkcd.com/rss.xml
@@ -71,6 +71,10 @@ target another channel explicitly, use:
 Default first-subscribe behaviour is **no backfill**: existing items are marked as
 seen without being announced.
 
+Feed names are scoped to the bot network where they are added. Channel
+announcement settings and seen item tracking are scoped to each network/channel
+pair, so the same channel name on different networks keeps separate state.
+
 ## Commands
 
 ```text
@@ -88,7 +92,7 @@ seen without being announced.
 ## Notes
 
 - Feed output uses the channel `headlineFormat` template.
-- Pulse stores feed state under Limnoria's `data/` directory.
+- Pulse stores network-scoped feed state under Limnoria's `data/` directory.
 - A later phase can add feed-specific formatting, keyword filters, and richer
   status reporting.
 

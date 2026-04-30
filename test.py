@@ -10,7 +10,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from supybot.test import PluginTestCase
+from supybot import test as supybot_test
 
 try:
     from . import plugin as pulse_plugin
@@ -48,7 +48,7 @@ ATOM_SAMPLE = b"""<?xml version="1.0" encoding="utf-8"?>
 """
 
 
-class PulseTestCase(PluginTestCase):
+class PulseTestCase(supybot_test.PluginTestCase):
     __test__ = False
     plugins = ("Pulse",)
 
@@ -127,16 +127,18 @@ class PulseHelperTestCase(unittest.TestCase):
             threading.Thread.start = original_start
 
         plugin._feeds = {
-            "example": {
-                "url": "https://example.com/rss.xml",
-                "title": "Example Feed",
-                "link": "https://example.com/",
-                "description": "Example description",
-                "language": "en-au",
-                "etag": "etag-1",
-                "modified": "Tue, 28 Apr 2026 08:00:00 GMT",
-                "last_checked": 0,
-                "last_error": "",
+            "testnet": {
+                "example": {
+                    "url": "https://example.com/rss.xml",
+                    "title": "Example Feed",
+                    "link": "https://example.com/",
+                    "description": "Example description",
+                    "language": "en-au",
+                    "etag": "etag-1",
+                    "modified": "Tue, 28 Apr 2026 08:00:00 GMT",
+                    "last_checked": 0,
+                    "last_error": "",
+                }
             }
         }
 
@@ -165,13 +167,65 @@ class PulseHelperTestCase(unittest.TestCase):
                 },
             ],
         ) as fetch:
-            parsed = plugin._refresh_feed("example", force=True)
+            parsed = plugin._refresh_feed("testnet", "example", force=True)
 
         self.assertEqual(fetch.call_count, 2)
         self.assertEqual(parsed["title"], "Example Feed")
         self.assertEqual(len(parsed["items"]), 2)
-        self.assertEqual(plugin._feed_cache["example"]["items"][0]["id"], "first-guid")
-        self.assertEqual(plugin._feeds["example"]["etag"], "etag-2")
+        self.assertEqual(
+            plugin._feed_cache[("testnet", "example")]["items"][0]["id"],
+            "first-guid",
+        )
+        self.assertEqual(plugin._feeds["testnet"]["example"]["etag"], "etag-2")
+
+    def test_feed_records_are_network_scoped(self):
+        original_start = threading.Thread.start
+        threading.Thread.start = lambda self: None
+        try:
+            plugin = pulse_plugin.Pulse(MagicMock())
+        finally:
+            threading.Thread.start = original_start
+
+        plugin._feeds = {}
+        plugin._set_feed_record("net1", "example", {"url": "https://net1.example/"})
+        plugin._set_feed_record("net2", "example", {"url": "https://net2.example/"})
+
+        self.assertEqual(
+            plugin._get_feed_record("net1", "example")["url"],
+            "https://net1.example/",
+        )
+        self.assertEqual(
+            plugin._get_feed_record("net2", "example")["url"],
+            "https://net2.example/",
+        )
+
+        plugin._delete_feed_record("net1", "example")
+
+        self.assertIsNone(plugin._get_feed_record("net1", "example"))
+        self.assertEqual(
+            plugin._get_feed_record("net2", "example")["url"],
+            "https://net2.example/",
+        )
+
+    def test_legacy_flat_feeds_seed_each_network(self):
+        original_start = threading.Thread.start
+        threading.Thread.start = lambda self: None
+        try:
+            plugin = pulse_plugin.Pulse(MagicMock())
+        finally:
+            threading.Thread.start = original_start
+
+        plugin._feeds = {
+            pulse_plugin.LEGACY_FEEDS_NETWORK: {
+                "example": {"url": "https://example.com/rss.xml"}
+            }
+        }
+
+        self.assertEqual(
+            plugin._get_feed_record("testnet", "example")["url"],
+            "https://example.com/rss.xml",
+        )
+        self.assertIn("testnet", plugin._feeds)
 
     def test_format_announce_add_change_is_clear(self):
         self.assertEqual(
