@@ -75,6 +75,28 @@ Feed names are scoped to the bot network where they are added. Channel
 announcement settings and seen item tracking are scoped to each network/channel
 pair, so the same channel name on different networks keeps separate state.
 
+### Configuration Variables
+
+Global values:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `plugins.Pulse.pollIntervalSeconds` | `300` | Seconds between checks for announced feeds. |
+| `plugins.Pulse.requestTimeoutSeconds` | `10` | HTTP timeout for feed requests. |
+| `plugins.Pulse.maxFeedBytes` | `1048576` | Maximum feed response size in bytes. |
+| `plugins.Pulse.startupDelaySeconds` | `15` | Delay before the first announce poll after startup. |
+| `plugins.Pulse.initialBackfillCount` | `0` | Existing items to announce when first subscribing a channel; `0` marks existing items as seen without announcing them. |
+
+Channel values:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `plugins.Pulse.enabled` | `False` | Enables announcements in the channel. |
+| `plugins.Pulse.announceFeeds` | empty | Feed names announced in the channel. Usually managed with `@pulse announce add/remove`. |
+| `plugins.Pulse.maximumAnnouncements` | `3` | Maximum new items announced per feed check. |
+| `plugins.Pulse.announceAsNotice` | `False` | Sends feed announcements as notices instead of channel messages. |
+| `plugins.Pulse.headlineFormat` | `$feed: $title <$link>` | Template for feed headlines and announcements. |
+
 ## Commands
 
 ```text
