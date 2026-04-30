@@ -115,6 +115,9 @@ Channel values:
 
 - Feed output uses the channel `headlineFormat` template.
 - Pulse stores network-scoped feed state under Limnoria's `data/` directory.
+- Runtime code is split between `plugin.py` for Limnoria commands, `feeds.py`
+  for RSS fetch/parse helpers, `storage.py` for feed and seen state, and
+  `rendering.py` for headline formatting.
 - A later phase can add feed-specific formatting, keyword filters, and richer
   status reporting.
 

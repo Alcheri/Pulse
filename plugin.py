@@ -5,20 +5,12 @@
 #
 ###
 
-import builtins
-import hashlib
 import json
-import re
-import string
 import threading
 import time
-import urllib.error
-import urllib.request
-import xml.etree.ElementTree as ET
 
 import supybot.conf as conf
 import supybot.ircmsgs as ircmsgs
-import supybot.ircutils as ircutils
 import supybot.log as log
 import supybot.registry as registry
 import supybot.world as world
@@ -28,13 +20,30 @@ from supybot.i18n import PluginInternationalization
 
 _ = PluginInternationalization("Pulse")
 
-USER_AGENT = "Limnoria-Pulse/0.1 (+https://github.com/Alcheri/Pulse)"
+try:
+    from .feeds import FeedError
+    from .feeds import clean_text as _clean_text
+    from .feeds import fetch_rss_feed
+    from .feeds import parse_rss2_feed
+    from .feeds import stable_entry_id as _stable_entry_id
+    from .rendering import format_announce_change as _format_announce_change
+    from .rendering import render_entry
+    from .storage import LEGACY_FEEDS_NETWORK
+    from .storage import PulseStorage
+except ImportError:
+    from feeds import FeedError
+    from feeds import clean_text as _clean_text
+    from feeds import fetch_rss_feed
+    from feeds import parse_rss2_feed
+    from feeds import stable_entry_id as _stable_entry_id
+    from rendering import format_announce_change as _format_announce_change
+    from rendering import render_entry
+    from storage import LEGACY_FEEDS_NETWORK
+    from storage import PulseStorage
+
 FEEDS_FILENAME = conf.supybot.directories.data.dirize("Pulse.feeds.json")
 SEEN_FILENAME = conf.supybot.directories.data.dirize("Pulse.seen.json")
-LEGACY_FEEDS_NETWORK = "__legacy__"
 POLL_TICK_SECONDS = 5
-SEEN_ID_LIMIT = 200
-CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def get_feed_name(irc, msg, args, state):
@@ -50,142 +59,6 @@ def get_feed_name(irc, msg, args, state):
 addConverter("feedName", get_feed_name)
 
 
-class FeedError(callbacks.Error):
-    pass
-
-
-def _clean_text(value, limit=None):
-    text = ircutils.stripFormatting(str(value or ""))
-    text = CONTROL_CHARS_RE.sub("", text)
-    text = " ".join(text.split())
-    if limit is not None and len(text) > limit:
-        return f"{text[: max(0, limit - 3)].rstrip()}..."
-    return text
-
-
-def _local_name(tag):
-    return tag.rsplit("}", 1)[-1]
-
-
-def _child_text(element, name):
-    for child in list(element):
-        if _local_name(child.tag) == name:
-            return _clean_text(child.text)
-    return ""
-
-
-def _stable_entry_id(guid="", link="", title="", description=""):
-    guid = _clean_text(guid, limit=512)
-    if guid:
-        return guid
-
-    link = _clean_text(link, limit=512)
-    if link:
-        return link
-
-    basis = " ".join(
-        part
-        for part in (_clean_text(title, 256), _clean_text(description, 256))
-        if part
-    )
-    if not basis:
-        raise FeedError("Feed entry is missing guid, link, title, and description.")
-    digest = hashlib.sha256(basis.encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _format_announce_change(action, channel, feeds):
-    names = [callbacks.canonicalName(feed) for feed in feeds]
-    if action == "add":
-        return f"Now announcing {format('%L', names)} in {channel}."
-    if action == "remove":
-        return f"Stopped announcing {format('%L', names)} in {channel}."
-    raise ValueError(f"Unknown announce action: {action}")
-
-
-def _looks_like_feed_record(value):
-    return isinstance(value, dict) and isinstance(value.get("url"), str)
-
-
-def parse_rss2_feed(xml_bytes):
-    try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError as e:
-        raise FeedError(f"Malformed XML: {e}") from e
-
-    if _local_name(root.tag) != "rss":
-        raise FeedError("Unsupported feed format: expected an RSS 2.0 document.")
-
-    version = (root.attrib.get("version") or "").strip()
-    if not version.startswith("2."):
-        raise FeedError("Unsupported RSS version: only RSS 2.0 feeds are supported.")
-
-    channel = None
-    for child in list(root):
-        if _local_name(child.tag) == "channel":
-            channel = child
-            break
-    if channel is None:
-        raise FeedError("RSS feed is missing a channel element.")
-
-    metadata = {
-        "title": _child_text(channel, "title") or "Untitled feed",
-        "link": _child_text(channel, "link"),
-        "description": _child_text(channel, "description"),
-        "language": _child_text(channel, "language"),
-        "items": [],
-    }
-
-    for item in list(channel):
-        if _local_name(item.tag) != "item":
-            continue
-        title = _child_text(item, "title") or "Untitled item"
-        link = _child_text(item, "link")
-        description = _child_text(item, "description")
-        published = _child_text(item, "pubDate")
-        guid = _child_text(item, "guid")
-        metadata["items"].append(
-            {
-                "id": _stable_entry_id(guid, link, title, description),
-                "title": title,
-                "link": link,
-                "description": description,
-                "published": published,
-            }
-        )
-
-    return metadata
-
-
-def fetch_rss_feed(url, timeout_seconds, max_feed_bytes, etag=None, modified=None):
-    headers = {"User-Agent": USER_AGENT}
-    if etag:
-        headers["If-None-Match"] = etag
-    if modified:
-        headers["If-Modified-Since"] = modified
-
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        response = urllib.request.urlopen(request, timeout=timeout_seconds)
-    except urllib.error.HTTPError as e:
-        if e.code == 304:
-            return {"status": 304, "etag": etag, "modified": modified, "body": b""}
-        raise FeedError(f"HTTP error {e.code} while fetching {url}") from e
-    except urllib.error.URLError as e:
-        raise FeedError(f"Network error while fetching {url}: {e.reason}") from e
-
-    with response:
-        body = response.read(max_feed_bytes + 1)
-        if len(body) > max_feed_bytes:
-            raise FeedError(f"Feed exceeds the maximum size of {max_feed_bytes} bytes.")
-        return {
-            "status": getattr(response, "status", 200),
-            "etag": response.headers.get("ETag", ""),
-            "modified": response.headers.get("Last-Modified", ""),
-            "body": body,
-        }
-
-
 class Pulse(callbacks.Plugin):
     """
     Poll RSS 2.0 feeds on demand or announce new items to configured channels.
@@ -197,9 +70,7 @@ class Pulse(callbacks.Plugin):
         self.__parent = super(Pulse, self)
         self.__parent.__init__(irc)
         self._lock = threading.RLock()
-        self._feeds = {}
-        self._seen = {}
-        self._feed_cache = {}
+        self._storage = PulseStorage(self._lock)
         self._stop_event = threading.Event()
         self._load_feeds()
         self._load_seen()
@@ -208,6 +79,30 @@ class Pulse(callbacks.Plugin):
             target=self._poll_loop, name="PulsePoller", daemon=True
         )
         self._poll_thread.start()
+
+    @property
+    def _feeds(self):
+        return self._storage.feeds
+
+    @_feeds.setter
+    def _feeds(self, value):
+        self._storage.feeds = value
+
+    @property
+    def _seen(self):
+        return self._storage.seen
+
+    @_seen.setter
+    def _seen(self, value):
+        self._storage.seen = value
+
+    @property
+    def _feed_cache(self):
+        return self._storage.feed_cache
+
+    @_feed_cache.setter
+    def _feed_cache(self, value):
+        self._storage.feed_cache = value
 
     def die(self):
         self._stop_event.set()
@@ -238,75 +133,39 @@ class Pulse(callbacks.Plugin):
             log.warning(f"Pulse: could not write {path}: {e}")
 
     def _load_feeds(self):
-        data = self._load_json_file(FEEDS_FILENAME, {})
-        if isinstance(data, dict):
-            if builtins.any(_looks_like_feed_record(value) for value in data.values()):
-                self._feeds = {LEGACY_FEEDS_NETWORK: data}
-            else:
-                self._feeds = data
+        self._storage.load_feeds(self._load_json_file(FEEDS_FILENAME, {}))
 
     def _load_seen(self):
-        data = self._load_json_file(SEEN_FILENAME, {})
-        if isinstance(data, dict):
-            self._seen = data
+        self._storage.load_seen(self._load_json_file(SEEN_FILENAME, {}))
 
     def _flush_state(self):
         with self._lock:
-            self._write_json_file(FEEDS_FILENAME, self._feeds)
-            self._write_json_file(SEEN_FILENAME, self._seen)
+            self._write_json_file(FEEDS_FILENAME, self._storage.feeds)
+            self._write_json_file(SEEN_FILENAME, self._storage.seen)
 
     def _channel_key(self, network, channel):
-        return f"{network}:{channel}"
+        return self._storage.channel_key(network, channel)
 
     def _feed_key(self, network, name):
-        return (network, callbacks.canonicalName(name))
+        return self._storage.feed_key(network, name)
 
     def _network_feeds(self, network):
-        if network not in self._feeds and LEGACY_FEEDS_NETWORK in self._feeds:
-            self._feeds[network] = {
-                name: dict(record)
-                for name, record in self._feeds[LEGACY_FEEDS_NETWORK].items()
-                if _looks_like_feed_record(record)
-            }
-        return self._feeds.setdefault(network, {})
+        return self._storage.network_feeds(network)
 
     def _get_feed_record(self, network, name):
-        return self._network_feeds(network).get(callbacks.canonicalName(name))
+        return self._storage.get_feed_record(network, name)
 
     def _set_feed_record(self, network, name, record):
-        self._network_feeds(network)[callbacks.canonicalName(name)] = record
+        self._storage.set_feed_record(network, name, record)
 
     def _delete_feed_record(self, network, name):
-        feed_name = callbacks.canonicalName(name)
-        network_feeds = self._feeds.get(network, {})
-        network_feeds.pop(feed_name, None)
-        if not network_feeds and LEGACY_FEEDS_NETWORK not in self._feeds:
-            self._feeds.pop(network, None)
-        self._feed_cache.pop(self._feed_key(network, feed_name), None)
+        self._storage.delete_feed_record(network, name)
 
     def _mark_seen_ids(self, network, channel, feed_name, entry_ids):
-        if not entry_ids:
-            return
-
-        channel_key = self._channel_key(network, channel)
-        with self._lock:
-            channel_state = self._seen.setdefault(channel_key, {})
-            seen_ids = channel_state.setdefault(feed_name, [])
-            existing = set(seen_ids)
-            for entry_id in entry_ids:
-                if entry_id not in existing:
-                    seen_ids.append(entry_id)
-                    existing.add(entry_id)
-            if len(seen_ids) > SEEN_ID_LIMIT:
-                channel_state[feed_name] = seen_ids[-SEEN_ID_LIMIT:]
+        self._storage.mark_seen_ids(network, channel, feed_name, entry_ids)
 
     def _forget_seen_ids(self, network, channel, feed_name):
-        channel_key = self._channel_key(network, channel)
-        with self._lock:
-            channel_state = self._seen.get(channel_key, {})
-            channel_state.pop(feed_name, None)
-            if not channel_state:
-                self._seen.pop(channel_key, None)
+        self._storage.forget_seen_ids(network, channel, feed_name)
 
     def _refresh_feed(self, network, name, force=False):
         feed_name = callbacks.canonicalName(name)
@@ -319,7 +178,7 @@ class Pulse(callbacks.Plugin):
         if not force:
             last_checked = float(record.get("last_checked", 0) or 0)
             if now - last_checked < self.registryValue("pollIntervalSeconds"):
-                cached = self._feed_cache.get(feed_key)
+                cached = self._storage.feed_cache.get(feed_key)
                 if cached is not None:
                     return cached
 
@@ -332,7 +191,7 @@ class Pulse(callbacks.Plugin):
         )
 
         if result["status"] == 304:
-            cached = self._feed_cache.get(feed_key)
+            cached = self._storage.feed_cache.get(feed_key)
             if cached is None:
                 result = fetch_rss_feed(
                     record["url"],
@@ -349,7 +208,7 @@ class Pulse(callbacks.Plugin):
             record["last_checked"] = now
             record["last_error"] = ""
             self._set_feed_record(network, feed_name, record)
-            return self._feed_cache.get(feed_key, {"items": []})
+            return self._storage.feed_cache.get(feed_key, {"items": []})
 
         parsed = parse_rss2_feed(result["body"])
         record.update(
@@ -366,7 +225,7 @@ class Pulse(callbacks.Plugin):
             }
         )
         self._set_feed_record(network, feed_name, record)
-        self._feed_cache[feed_key] = parsed
+        self._storage.feed_cache[feed_key] = parsed
         return parsed
 
     def _entry_template(self, channel, network):
@@ -378,14 +237,7 @@ class Pulse(callbacks.Plugin):
             if channel
             else "$feed: $title <$link>"
         )
-        rendered = string.Template(template).safe_substitute(
-            feed=feed_name,
-            title=entry["title"],
-            link=entry["link"],
-            description=entry["description"],
-            published=entry["published"],
-        )
-        return _clean_text(rendered, limit=380)
+        return render_entry(feed_name, entry, template)
 
     def _current_targets(self):
         targets = {}
@@ -412,17 +264,13 @@ class Pulse(callbacks.Plugin):
             self._send_entry(irc, channel, feed_name, entry)
 
     def _entries_to_announce(self, network, channel, feed_name, entries):
-        channel_key = self._channel_key(network, channel)
-        channel_state = self._seen.get(channel_key, {})
-        seen_ids = set(channel_state.get(feed_name, []))
-        new_entries = [entry for entry in entries if entry["id"] not in seen_ids]
-        if not new_entries:
-            return []
-        self._mark_seen_ids(
-            network, channel, feed_name, [entry["id"] for entry in new_entries]
+        return self._storage.entries_to_announce(
+            network,
+            channel,
+            feed_name,
+            entries,
+            self.registryValue("maximumAnnouncements", channel, network),
         )
-        maximum = self.registryValue("maximumAnnouncements", channel, network)
-        return new_entries[:maximum]
 
     def _send_entry(self, irc, channel, feed_name, entry):
         text = self._render_entry(
@@ -502,7 +350,7 @@ class Pulse(callbacks.Plugin):
                 "last_error": "",
             },
         )
-        self._feed_cache[self._feed_key(irc.network, name)] = parsed
+        self._storage.feed_cache[self._feed_key(irc.network, name)] = parsed
         self._flush_state()
         irc.reply(f"Added {name}: {parsed['title']}", prefixNick=False)
 
@@ -518,13 +366,7 @@ class Pulse(callbacks.Plugin):
             irc.error("Unknown feed.", prefixNick=False)
             return
         self._delete_feed_record(irc.network, name)
-        prefix = f"{irc.network}:"
-        for channel_key in list(self._seen.keys()):
-            if not channel_key.startswith(prefix):
-                continue
-            self._seen[channel_key].pop(name, None)
-            if not self._seen[channel_key]:
-                self._seen.pop(channel_key, None)
+        self._storage.remove_feed_from_network_seen(irc.network, name)
         self._flush_state()
         irc.replySuccess()
 

@@ -13,9 +13,15 @@ from unittest.mock import MagicMock, patch
 from supybot import test as supybot_test
 
 try:
+    from . import feeds
     from . import plugin as pulse_plugin
+    from . import rendering
+    from . import storage
 except ImportError:
+    import feeds
     import plugin as pulse_plugin
+    import rendering
+    import storage
 
 
 RSS_SAMPLE = b"""<?xml version="1.0" encoding="utf-8"?>
@@ -58,25 +64,25 @@ class PulseHelperTestCase(unittest.TestCase):
         self.assertTrue(hasattr(pulse_plugin, "Class"))
 
     def test_stable_entry_id_prefers_guid(self):
-        entry_id = pulse_plugin._stable_entry_id(
+        entry_id = feeds.stable_entry_id(
             guid="guid-123", link="https://example.com/item", title="Hello"
         )
         self.assertEqual(entry_id, "guid-123")
 
     def test_stable_entry_id_falls_back_to_link(self):
-        entry_id = pulse_plugin._stable_entry_id(
+        entry_id = feeds.stable_entry_id(
             guid="", link="https://example.com/item", title="Hello"
         )
         self.assertEqual(entry_id, "https://example.com/item")
 
     def test_stable_entry_id_hashes_title_and_description(self):
-        entry_id = pulse_plugin._stable_entry_id(
+        entry_id = feeds.stable_entry_id(
             guid="", link="", title="Hello", description="World"
         )
         self.assertTrue(entry_id.startswith("sha256:"))
 
     def test_parse_rss2_feed_extracts_metadata(self):
-        parsed = pulse_plugin.parse_rss2_feed(RSS_SAMPLE)
+        parsed = feeds.parse_rss2_feed(RSS_SAMPLE)
 
         self.assertEqual(parsed["title"], "Example Feed")
         self.assertEqual(parsed["link"], "https://example.com/")
@@ -86,8 +92,8 @@ class PulseHelperTestCase(unittest.TestCase):
         self.assertEqual(parsed["items"][1]["id"], "https://example.com/second")
 
     def test_parse_rss2_feed_rejects_atom(self):
-        with self.assertRaises(pulse_plugin.FeedError):
-            pulse_plugin.parse_rss2_feed(ATOM_SAMPLE)
+        with self.assertRaises(feeds.FeedError):
+            feeds.parse_rss2_feed(ATOM_SAMPLE)
 
     def test_prime_subscription_reads_global_backfill_setting(self):
         original_start = threading.Thread.start
@@ -216,7 +222,7 @@ class PulseHelperTestCase(unittest.TestCase):
             threading.Thread.start = original_start
 
         plugin._feeds = {
-            pulse_plugin.LEGACY_FEEDS_NETWORK: {
+            storage.LEGACY_FEEDS_NETWORK: {
                 "example": {"url": "https://example.com/rss.xml"}
             }
         }
@@ -229,14 +235,49 @@ class PulseHelperTestCase(unittest.TestCase):
 
     def test_format_announce_add_change_is_clear(self):
         self.assertEqual(
-            pulse_plugin._format_announce_change("add", "#test", ["LimnoriaNews"]),
+            rendering.format_announce_change("add", "#test", ["LimnoriaNews"]),
             "Now announcing limnorianews in #test.",
         )
 
     def test_format_announce_remove_change_is_clear(self):
         self.assertEqual(
-            pulse_plugin._format_announce_change("remove", "#test", ["LimnoriaNews"]),
+            rendering.format_announce_change("remove", "#test", ["LimnoriaNews"]),
             "Stopped announcing limnorianews in #test.",
+        )
+
+    def test_render_entry_uses_template_and_cleans_output(self):
+        entry = {
+            "title": "\x02Title\x02",
+            "link": "https://example.com/item",
+            "description": "Description",
+            "published": "Tue, 28 Apr 2026 08:00:00 GMT",
+        }
+
+        self.assertEqual(
+            rendering.render_entry("example", entry, "$feed: $title <$link>"),
+            "example: Title <https://example.com/item>",
+        )
+
+    def test_storage_marks_and_limits_seen_ids(self):
+        store = storage.PulseStorage(threading.RLock())
+
+        store.mark_seen_ids("net", "#chan", "example", ["old", "new", "new"])
+
+        self.assertEqual(store.seen["net:#chan"]["example"], ["old", "new"])
+
+    def test_storage_entries_to_announce_returns_unseen_only(self):
+        store = storage.PulseStorage(threading.RLock())
+        store.mark_seen_ids("net", "#chan", "example", ["old"])
+
+        entries = [{"id": "old"}, {"id": "new-1"}, {"id": "new-2"}]
+
+        self.assertEqual(
+            store.entries_to_announce("net", "#chan", "example", entries, 1),
+            [{"id": "new-1"}],
+        )
+        self.assertEqual(
+            store.seen["net:#chan"]["example"],
+            ["old", "new-1", "new-2"],
         )
 
     def test_announce_add_help_mentions_current_channel(self):
