@@ -128,7 +128,9 @@ class Pulse(callbacks.Plugin):
     def _write_json_file(self, path, data):
         try:
             with open(path, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2, sort_keys=True)
+                json.dump(data, handle, indent=2)
+        except (TypeError, ValueError) as e:
+            log.warning(f"Pulse: could not serialise {path}: {e}")
         except OSError as e:
             log.warning(f"Pulse: could not write {path}: {e}")
 
@@ -139,9 +141,9 @@ class Pulse(callbacks.Plugin):
         self._storage.load_seen(self._load_json_file(SEEN_FILENAME, {}))
 
     def _flush_state(self):
-        with self._lock:
-            self._write_json_file(FEEDS_FILENAME, self._storage.feeds)
-            self._write_json_file(SEEN_FILENAME, self._storage.seen)
+        feeds, seen = self._storage.snapshot_state()
+        self._write_json_file(FEEDS_FILENAME, feeds)
+        self._write_json_file(SEEN_FILENAME, seen)
 
     def _channel_key(self, network, channel):
         return self._storage.channel_key(network, channel)

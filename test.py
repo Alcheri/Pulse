@@ -5,8 +5,11 @@
 #
 ###
 
+import json
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -279,6 +282,49 @@ class PulseHelperTestCase(unittest.TestCase):
             store.seen["net:#chan"]["example"],
             ["old", "new-1", "new-2"],
         )
+
+    def test_storage_snapshot_is_isolated_from_live_state(self):
+        store = storage.PulseStorage(threading.RLock())
+        store.set_feed_record("net", "example", {"url": "https://example.com/rss.xml"})
+        feeds, seen = store.snapshot_state()
+
+        feeds["net"]["example"]["url"] = "https://changed.example/rss.xml"
+        seen["net:#chan"] = {"example": ["entry-1"]}
+
+        self.assertEqual(
+            store.get_feed_record("net", "example")["url"],
+            "https://example.com/rss.xml",
+        )
+        self.assertEqual(store.seen, {})
+
+    def test_flush_state_logs_unserialisable_state_without_raising(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        plugin._lock = threading.RLock()
+        plugin._storage = storage.PulseStorage(plugin._lock)
+        plugin._storage.seen = {"net:#chan": {"example": {"entry-1"}}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feeds_path = str(Path(tmpdir) / "feeds.json")
+            seen_path = str(Path(tmpdir) / "seen.json")
+            with patch.object(pulse_plugin, "FEEDS_FILENAME", feeds_path):
+                with patch.object(pulse_plugin, "SEEN_FILENAME", seen_path):
+                    with patch.object(pulse_plugin.log, "warning") as warning:
+                        plugin._flush_state()
+
+        warning.assert_called_once()
+        self.assertIn("could not serialise", warning.call_args[0][0])
+
+    def test_write_json_file_does_not_sort_unorderable_keys(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = str(Path(tmpdir) / "state.json")
+            plugin._write_json_file(path, {1: "number", "2": "string"})
+
+            self.assertEqual(
+                json.loads(Path(path).read_text(encoding="utf-8")),
+                {"1": "number", "2": "string"},
+            )
 
     def test_announce_add_help_mentions_current_channel(self):
         self.assertIn(
