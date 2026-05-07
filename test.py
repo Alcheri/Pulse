@@ -216,7 +216,7 @@ class PulseHelperTestCase(unittest.TestCase):
             "https://net2.example/",
         )
 
-    def test_legacy_flat_feeds_seed_each_network(self):
+    def test_legacy_flat_feeds_are_readable_without_creating_network(self):
         original_start = threading.Thread.start
         threading.Thread.start = lambda self: None
         try:
@@ -234,7 +234,7 @@ class PulseHelperTestCase(unittest.TestCase):
             plugin._get_feed_record("testnet", "example")["url"],
             "https://example.com/rss.xml",
         )
-        self.assertIn("testnet", plugin._feeds)
+        self.assertNotIn("testnet", plugin._feeds)
 
     def test_format_announce_add_change_is_clear(self):
         self.assertEqual(
@@ -281,6 +281,26 @@ class PulseHelperTestCase(unittest.TestCase):
         self.assertEqual(
             store.seen["net:#chan"]["example"],
             ["old", "new-1", "new-2"],
+        )
+
+    def test_storage_missing_feed_lookup_does_not_create_network(self):
+        store = storage.PulseStorage(threading.RLock())
+
+        self.assertIsNone(store.get_feed_record("ChatLounge", "bbc"))
+        self.assertEqual(store.feeds, {})
+
+    def test_storage_prunes_empty_networks(self):
+        store = storage.PulseStorage(threading.RLock())
+        store.feeds = {
+            "ChatLounge": {},
+            "DALnet": {"bbc": {"url": "https://example.com/rss.xml"}},
+        }
+
+        store.prune_empty_networks()
+
+        self.assertEqual(
+            store.feeds,
+            {"DALnet": {"bbc": {"url": "https://example.com/rss.xml"}}},
         )
 
     def test_storage_snapshot_is_isolated_from_live_state(self):

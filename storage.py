@@ -59,7 +59,13 @@ class PulseStorage:
             return self.feeds.setdefault(network, {})
 
     def get_feed_record(self, network, name):
-        record = self.network_feeds(network).get(callbacks.canonicalName(name))
+        with self._lock:
+            if network not in self.feeds and LEGACY_FEEDS_NETWORK in self.feeds:
+                record = self.feeds[LEGACY_FEEDS_NETWORK].get(
+                    callbacks.canonicalName(name)
+                )
+            else:
+                record = self.feeds.get(network, {}).get(callbacks.canonicalName(name))
         if record is None:
             return None
         return dict(record)
@@ -110,6 +116,14 @@ class PulseStorage:
                 self.seen[channel_key].pop(feed_name, None)
                 if not self.seen[channel_key]:
                     self.seen.pop(channel_key, None)
+
+    def prune_empty_networks(self):
+        with self._lock:
+            for network, network_feeds in list(self.feeds.items()):
+                if network == LEGACY_FEEDS_NETWORK:
+                    continue
+                if not network_feeds:
+                    self.feeds.pop(network, None)
 
     def entries_to_announce(self, network, channel, feed_name, entries, maximum):
         channel_key = self.channel_key(network, channel)

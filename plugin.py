@@ -238,6 +238,7 @@ class Pulse(callbacks.Plugin):
         log.info(f"Pulse: loaded seen state for {channel_count} channel(s) from {path}")
 
     def _flush_state(self):
+        self._storage.prune_empty_networks()
         feeds, seen = self._storage.snapshot_state()
         self._write_json_file(self._feeds_path(), feeds)
         self._write_json_file(self._seen_path(), seen)
