@@ -306,8 +306,8 @@ class PulseHelperTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             feeds_path = str(Path(tmpdir) / "feeds.json")
             seen_path = str(Path(tmpdir) / "seen.json")
-            with patch.object(pulse_plugin, "FEEDS_FILENAME", feeds_path):
-                with patch.object(pulse_plugin, "SEEN_FILENAME", seen_path):
+            with patch.object(plugin, "_feeds_path", return_value=Path(feeds_path)):
+                with patch.object(plugin, "_seen_path", return_value=Path(seen_path)):
                     with patch.object(pulse_plugin.log, "warning") as warning:
                         plugin._flush_state()
 
@@ -325,6 +325,55 @@ class PulseHelperTestCase(unittest.TestCase):
                 json.loads(Path(path).read_text(encoding="utf-8")),
                 {"1": "number", "2": "string"},
             )
+
+    def test_write_json_file_keeps_existing_file_on_serialisation_failure(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            path.write_text('{"existing": true}\n', encoding="utf-8")
+
+            with patch.object(pulse_plugin.log, "warning") as warning:
+                plugin._write_json_file(path, {"broken": {"entry-1"}})
+
+            self.assertEqual(path.read_text(encoding="utf-8"), '{"existing": true}\n')
+            warning.assert_called_once()
+            self.assertIn("could not serialise", warning.call_args[0][0])
+
+    def test_state_path_resolves_data_directory_at_runtime(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+
+        with patch.object(
+            pulse_plugin,
+            "_dirize_data_file",
+            return_value="pulse-state/Pulse.feeds.json",
+        ) as dirize_data_file:
+            self.assertEqual(plugin._feeds_path(), Path("pulse-state/Pulse.feeds.json"))
+
+        dirize_data_file.assert_called_once_with("Pulse.feeds.json")
+
+    def test_state_command_reports_resolved_files_and_loaded_feeds(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        plugin._lock = threading.RLock()
+        plugin._storage = storage.PulseStorage(plugin._lock)
+        plugin._storage.feeds = {"ChatLounge": {"bbc": {"url": "https://example/"}}}
+        plugin._storage.seen = {"ChatLounge:#test": {"bbc": ["entry-1"]}}
+        plugin.log = MagicMock()
+        irc = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feeds_path = Path(tmpdir) / "Pulse.feeds.json"
+            seen_path = Path(tmpdir) / "Pulse.seen.json"
+            feeds_path.write_text("{}", encoding="utf-8")
+            with patch.object(plugin, "_feeds_path", return_value=feeds_path):
+                with patch.object(plugin, "_seen_path", return_value=seen_path):
+                    plugin.state(irc, MagicMock(), [])
+
+        reply = irc.reply.call_args[0][0]
+        self.assertIn("Feeds: 1 across 1 network(s)", reply)
+        self.assertIn(f"feed file: {feeds_path} (exists)", reply)
+        self.assertIn(f"seen file: {seen_path} (missing)", reply)
+        self.assertIn("seen channels: 1", reply)
 
     def test_announce_add_help_mentions_current_channel(self):
         self.assertIn(

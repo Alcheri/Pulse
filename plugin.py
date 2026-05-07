@@ -6,8 +6,11 @@
 ###
 
 import json
+import os
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 import supybot.conf as conf
 import supybot.ircmsgs as ircmsgs
@@ -41,9 +44,13 @@ except ImportError:
     from storage import LEGACY_FEEDS_NETWORK
     from storage import PulseStorage
 
-FEEDS_FILENAME = conf.supybot.directories.data.dirize("Pulse.feeds.json")
-SEEN_FILENAME = conf.supybot.directories.data.dirize("Pulse.seen.json")
+FEEDS_FILENAME = "Pulse.feeds.json"
+SEEN_FILENAME = "Pulse.seen.json"
 POLL_TICK_SECONDS = 5
+
+
+def _dirize_data_file(filename):
+    return conf.supybot.directories.data.dirize(filename)
 
 
 def get_feed_name(irc, msg, args, state):
@@ -112,11 +119,22 @@ class Pulse(callbacks.Plugin):
             world.flushers.remove(self._flush_state)
         self.__parent.die()
 
+    def _state_path(self, filename):
+        return Path(_dirize_data_file(filename))
+
+    def _feeds_path(self):
+        return self._state_path(FEEDS_FILENAME)
+
+    def _seen_path(self):
+        return self._state_path(SEEN_FILENAME)
+
     def _load_json_file(self, path, default):
+        path = Path(path)
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            with path.open("r", encoding="utf-8") as handle:
                 return json.load(handle)
         except FileNotFoundError:
+            log.info(f"Pulse: state file does not exist: {path}")
             return default
         except json.JSONDecodeError as e:
             log.warning(f"Pulse: could not parse {path}: {e}")
@@ -126,24 +144,61 @@ class Pulse(callbacks.Plugin):
             return default
 
     def _write_json_file(self, path, data):
+        path = Path(path)
+        tmp_path = None
         try:
-            with open(path, "w", encoding="utf-8") as handle:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(path.parent),
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            ) as handle:
+                tmp_path = Path(handle.name)
                 json.dump(data, handle, indent=2)
+                handle.write("\n")
+            os.replace(tmp_path, path)
         except (TypeError, ValueError) as e:
             log.warning(f"Pulse: could not serialise {path}: {e}")
         except OSError as e:
             log.warning(f"Pulse: could not write {path}: {e}")
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError as e:
+                    log.warning(
+                        f"Pulse: could not remove temporary state file {tmp_path}: {e}"
+                    )
 
     def _load_feeds(self):
-        self._storage.load_feeds(self._load_json_file(FEEDS_FILENAME, {}))
+        path = self._feeds_path()
+        self._storage.load_feeds(self._load_json_file(path, {}))
+        feeds, _ = self._storage.snapshot_state()
+        network_count = len(feeds)
+        feed_count = sum(
+            len(network_feeds)
+            for network_feeds in feeds.values()
+            if isinstance(network_feeds, dict)
+        )
+        log.info(
+            f"Pulse: loaded {feed_count} feed(s) across "
+            f"{network_count} network(s) from {path}"
+        )
 
     def _load_seen(self):
-        self._storage.load_seen(self._load_json_file(SEEN_FILENAME, {}))
+        path = self._seen_path()
+        self._storage.load_seen(self._load_json_file(path, {}))
+        _, seen = self._storage.snapshot_state()
+        channel_count = len(seen)
+        log.info(f"Pulse: loaded seen state for {channel_count} channel(s) from {path}")
 
     def _flush_state(self):
         feeds, seen = self._storage.snapshot_state()
-        self._write_json_file(FEEDS_FILENAME, feeds)
-        self._write_json_file(SEEN_FILENAME, seen)
+        self._write_json_file(self._feeds_path(), feeds)
+        self._write_json_file(self._seen_path(), seen)
 
     def _channel_key(self, network, channel):
         return self._storage.channel_key(network, channel)
@@ -383,6 +438,33 @@ class Pulse(callbacks.Plugin):
         irc.reply(format("%L", names) or "No feeds are registered.", prefixNick=False)
 
     list = wrap(list)
+
+    def state(self, irc, msg, args):
+        """takes no arguments
+
+        Shows the state files Pulse is using and how many feeds are loaded.
+        """
+        feeds_path = self._feeds_path()
+        seen_path = self._seen_path()
+        feeds, seen = self._storage.snapshot_state()
+        network_count = len(feeds)
+        feed_count = sum(
+            len(network_feeds)
+            for network_feeds in feeds.values()
+            if isinstance(network_feeds, dict)
+        )
+        irc.reply(
+            "Feeds: "
+            f"{feed_count} across {network_count} network(s); "
+            f"feed file: {feeds_path} "
+            f"({'exists' if feeds_path.exists() else 'missing'}); "
+            f"seen file: {seen_path} "
+            f"({'exists' if seen_path.exists() else 'missing'}); "
+            f"seen channels: {len(seen)}",
+            prefixNick=False,
+        )
+
+    state = wrap(state)
 
     def show(self, irc, msg, args, name):
         """<name>
