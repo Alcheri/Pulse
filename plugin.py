@@ -33,6 +33,7 @@ try:
     from .rendering import render_entry
     from .storage import LEGACY_FEEDS_NETWORK
     from .storage import PulseStorage
+    from .storage import network_key
 except ImportError:
     from feeds import FeedError
     from feeds import clean_text as _clean_text
@@ -43,10 +44,21 @@ except ImportError:
     from rendering import render_entry
     from storage import LEGACY_FEEDS_NETWORK
     from storage import PulseStorage
+    from storage import network_key
 
 FEEDS_FILENAME = "Pulse.feeds.json"
 SEEN_FILENAME = "Pulse.seen.json"
 POLL_TICK_SECONDS = 5
+
+
+def _is_pulse_flush_state(callback):
+    return getattr(callback, "__self__", None) is not None and getattr(
+        callback, "__func__", None
+    ) is getattr(Pulse, "_flush_state", None)
+
+
+def _pulse_flushers():
+    return [flusher for flusher in world.flushers if _is_pulse_flush_state(flusher)]
 
 
 def _dirize_data_file(filename):
@@ -114,7 +126,18 @@ class Pulse(callbacks.Plugin):
         self._stop_event = threading.Event()
         self._load_feeds()
         self._load_seen()
+        stale_flushers = [
+            flusher for flusher in _pulse_flushers() if flusher.__self__ is not self
+        ]
+        for flusher in stale_flushers:
+            world.flushers.remove(flusher)
+        if stale_flushers:
+            log.warning(f"Pulse: removed {len(stale_flushers)} stale state flusher(s)")
         world.flushers.append(self._flush_state)
+        log.info(
+            f"Pulse: registered state flusher for instance {id(self)}; "
+            f"active Pulse flushers: {len(_pulse_flushers())}"
+        )
         self._poll_thread = threading.Thread(
             target=self._poll_loop, name="PulsePoller", daemon=True
         )
@@ -148,7 +171,7 @@ class Pulse(callbacks.Plugin):
         self._stop_event.set()
         self._poll_thread.join(timeout=POLL_TICK_SECONDS)
         self._flush_state()
-        if self._flush_state in world.flushers:
+        while self._flush_state in world.flushers:
             world.flushers.remove(self._flush_state)
         self.__parent.die()
 
@@ -490,6 +513,18 @@ class Pulse(callbacks.Plugin):
         feeds_path = self._feeds_path()
         seen_path = self._seen_path()
         feeds, seen = self._storage.snapshot_state()
+        current_network = network_key(irc.network)
+        current_feeds = sorted(feeds.get(current_network, {}))
+        stored_networks = [
+            f"{network}: {format('%L', sorted(network_feeds)) or 'none'}"
+            for network, network_feeds in sorted(feeds.items())
+            if isinstance(network_feeds, dict)
+        ]
+        pulse_threads = [
+            thread.name
+            for thread in threading.enumerate()
+            if thread.name == "PulsePoller"
+        ]
         network_count = len(feeds)
         feed_count = sum(
             len(network_feeds)
@@ -503,7 +538,12 @@ class Pulse(callbacks.Plugin):
             f"({'exists' if feeds_path.exists() else 'missing'}); "
             f"seen file: {seen_path} "
             f"({'exists' if seen_path.exists() else 'missing'}); "
-            f"seen channels: {len(seen)}",
+            f"seen channels: {len(seen)}; "
+            f"current network: {current_network}; "
+            f"current network feeds: {format('%L', current_feeds) or 'none'}; "
+            f"stored networks: {' | '.join(stored_networks) or 'none'}; "
+            f"instance: {id(self)}; Pulse flushers: {len(_pulse_flushers())}; "
+            f"Pulse pollers: {len(pulse_threads)}",
             prefixNick=False,
         )
 

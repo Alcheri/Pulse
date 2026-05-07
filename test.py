@@ -57,6 +57,11 @@ ATOM_SAMPLE = b"""<?xml version="1.0" encoding="utf-8"?>
 """
 
 
+class DisplayNetwork:
+    def __str__(self):
+        return "ChatLounge"
+
+
 class PulseTestCase(supybot_test.PluginTestCase):
     __test__ = False
     plugins = ("Pulse",)
@@ -236,6 +241,22 @@ class PulseHelperTestCase(unittest.TestCase):
         )
         self.assertNotIn("testnet", plugin._feeds)
 
+    def test_init_removes_stale_pulse_flushers(self):
+        original_flushers = list(pulse_plugin.world.flushers)
+        original_start = threading.Thread.start
+        old_plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        pulse_plugin.world.flushers[:] = [old_plugin._flush_state]
+        threading.Thread.start = lambda self: None
+        try:
+            plugin = pulse_plugin.Pulse(MagicMock())
+
+            self.assertNotIn(old_plugin._flush_state, pulse_plugin.world.flushers)
+            self.assertIn(plugin._flush_state, pulse_plugin.world.flushers)
+            self.assertEqual(len(pulse_plugin._pulse_flushers()), 1)
+        finally:
+            threading.Thread.start = original_start
+            pulse_plugin.world.flushers[:] = original_flushers
+
     def test_format_announce_add_change_is_clear(self):
         self.assertEqual(
             rendering.format_announce_change("add", "#test", ["LimnoriaNews"]),
@@ -288,6 +309,15 @@ class PulseHelperTestCase(unittest.TestCase):
 
         self.assertIsNone(store.get_feed_record("ChatLounge", "bbc"))
         self.assertEqual(store.feeds, {})
+
+    def test_storage_normalises_network_objects_for_lookup(self):
+        store = storage.PulseStorage(threading.RLock())
+        store.feeds = {"ChatLounge": {"bbc": {"url": "https://example.com/rss.xml"}}}
+
+        self.assertEqual(
+            store.get_feed_record(DisplayNetwork(), "bbc"),
+            {"url": "https://example.com/rss.xml"},
+        )
 
     def test_storage_prunes_empty_networks(self):
         store = storage.PulseStorage(threading.RLock())
@@ -379,7 +409,7 @@ class PulseHelperTestCase(unittest.TestCase):
         plugin._storage.feeds = {"ChatLounge": {"bbc": {"url": "https://example/"}}}
         plugin._storage.seen = {"ChatLounge:#test": {"bbc": ["entry-1"]}}
         plugin.log = MagicMock()
-        irc = MagicMock()
+        irc = MagicMock(network="ChatLounge")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             feeds_path = Path(tmpdir) / "Pulse.feeds.json"
@@ -394,6 +424,9 @@ class PulseHelperTestCase(unittest.TestCase):
         self.assertIn(f"feed file: {feeds_path} (exists)", reply)
         self.assertIn(f"seen file: {seen_path} (missing)", reply)
         self.assertIn("seen channels: 1", reply)
+        self.assertIn("current network: ChatLounge", reply)
+        self.assertIn("current network feeds: bbc", reply)
+        self.assertIn("stored networks: ChatLounge: bbc", reply)
 
     def test_load_json_file_merges_duplicate_network_keys(self):
         plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
