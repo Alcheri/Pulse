@@ -53,6 +53,39 @@ def _dirize_data_file(filename):
     return conf.supybot.directories.data.dirize(filename)
 
 
+def _merge_duplicate_json_object_pairs(pairs):
+    data = {}
+    duplicates = set()
+    for key, value in pairs:
+        if key in data:
+            duplicates.add(key)
+            if isinstance(data[key], dict) and isinstance(value, dict):
+                merged = dict(data[key])
+                merged.update(value)
+                data[key] = merged
+            else:
+                data[key] = value
+            continue
+        data[key] = value
+    if duplicates:
+        data["__pulse_duplicate_keys__"] = sorted(duplicates)
+    return data
+
+
+def _pop_duplicate_key_markers(value):
+    duplicates = []
+    if isinstance(value, dict):
+        marker = value.pop("__pulse_duplicate_keys__", None)
+        if marker:
+            duplicates.extend(marker)
+        for child in value.values():
+            duplicates.extend(_pop_duplicate_key_markers(child))
+    elif isinstance(value, list):
+        for child in value:
+            duplicates.extend(_pop_duplicate_key_markers(child))
+    return duplicates
+
+
 def get_feed_name(irc, msg, args, state):
     if irc.isChannel(args[0]):
         state.errorInvalid("feed name", args[0], "must not be a channel name.")
@@ -132,7 +165,16 @@ class Pulse(callbacks.Plugin):
         path = Path(path)
         try:
             with path.open("r", encoding="utf-8") as handle:
-                return json.load(handle)
+                data = json.load(
+                    handle, object_pairs_hook=_merge_duplicate_json_object_pairs
+                )
+            duplicates = _pop_duplicate_key_markers(data)
+            if duplicates:
+                log.warning(
+                    "Pulse: merged duplicate keys in "
+                    f"{path}: {', '.join(sorted(set(duplicates)))}"
+                )
+            return data
         except FileNotFoundError:
             log.info(f"Pulse: state file does not exist: {path}")
             return default

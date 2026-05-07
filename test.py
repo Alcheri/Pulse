@@ -375,6 +375,40 @@ class PulseHelperTestCase(unittest.TestCase):
         self.assertIn(f"seen file: {seen_path} (missing)", reply)
         self.assertIn("seen channels: 1", reply)
 
+    def test_load_json_file_merges_duplicate_network_keys(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "Pulse.feeds.json"
+            path.write_text(
+                """
+{
+  "ChatLounge": {
+    "bbc": {
+      "url": "https://feeds.bbci.co.uk/news/world/rss.xml"
+    }
+  },
+  "ChatLounge": {}
+}
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(pulse_plugin.log, "warning") as warning:
+                data = plugin._load_json_file(path, {})
+
+        self.assertEqual(
+            data,
+            {
+                "ChatLounge": {
+                    "bbc": {"url": "https://feeds.bbci.co.uk/news/world/rss.xml"}
+                }
+            },
+        )
+        warning.assert_called_once()
+        self.assertIn("merged duplicate keys", warning.call_args[0][0])
+        self.assertIn("ChatLounge", warning.call_args[0][0])
+
     def test_announce_add_help_mentions_current_channel(self):
         self.assertIn(
             "If <channel> is omitted, Pulse uses the current channel",
