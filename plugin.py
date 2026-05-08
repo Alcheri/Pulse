@@ -554,20 +554,22 @@ class Pulse(callbacks.Plugin):
             for network_feeds in feeds.values()
             if isinstance(network_feeds, dict)
         )
-        irc.reply(
-            "Feeds: "
-            f"{feed_count} across {network_count} network(s); "
-            f"feed file: {feeds_path} "
-            f"({'exists' if feeds_path.exists() else 'missing'}); "
-            f"seen file: {seen_path} "
-            f"({'exists' if seen_path.exists() else 'missing'}); "
-            f"seen channels: {len(seen)}; "
-            f"current network: {current_network}; "
-            f"current network feeds: {format('%L', current_feeds) or 'none'}; "
-            f"stored networks: {' | '.join(stored_networks) or 'none'}; "
-            f"instance: {id(self)}; Pulse flushers: {len(_pulse_flushers())}; "
-            f"Pulse pollers: {len(pulse_threads)}",
-            prefixNick=False,
+        irc.queueMsg(
+            ircmsgs.notice(
+                msg.nick,
+                "Feeds: "
+                f"{feed_count} across {network_count} network(s); "
+                f"feed file: {feeds_path} "
+                f"({'exists' if feeds_path.exists() else 'missing'}); "
+                f"seen file: {seen_path} "
+                f"({'exists' if seen_path.exists() else 'missing'}); "
+                f"seen channels: {len(seen)}; "
+                f"current network: {current_network}; "
+                f"current network feeds: {format('%L', current_feeds) or 'none'}; "
+                f"stored networks: {' | '.join(stored_networks) or 'none'}; "
+                f"instance: {id(self)}; Pulse flushers: {len(_pulse_flushers())}; "
+                f"Pulse pollers: {len(pulse_threads)}",
+            )
         )
 
     state = wrap(state)

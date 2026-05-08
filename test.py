@@ -429,6 +429,7 @@ class PulseHelperTestCase(unittest.TestCase):
         plugin._storage.seen = {"ChatLounge:#test": {"bbc": ["entry-1"]}}
         plugin.log = MagicMock()
         irc = MagicMock(network="ChatLounge")
+        msg = MagicMock(nick="OwnerNick")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             feeds_path = Path(tmpdir) / "Pulse.feeds.json"
@@ -437,9 +438,12 @@ class PulseHelperTestCase(unittest.TestCase):
             with patch.object(plugin, "_feeds_path", return_value=feeds_path):
                 with patch.object(plugin, "_seen_path", return_value=seen_path):
                     with patch.object(plugin, "_check_owner", return_value=True):
-                        plugin.state(irc, MagicMock(), [])
+                        plugin.state(irc, msg, [])
 
-        reply = irc.reply.call_args[0][0]
+        notice = irc.queueMsg.call_args[0][0]
+        self.assertEqual(notice.command, "NOTICE")
+        self.assertEqual(notice.args[0], "OwnerNick")
+        reply = notice.args[1]
         self.assertIn("Feeds: 1 across 1 network(s)", reply)
         self.assertIn(f"feed file: {feeds_path} (exists)", reply)
         self.assertIn(f"seen file: {seen_path} (missing)", reply)
