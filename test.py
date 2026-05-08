@@ -402,6 +402,25 @@ class PulseHelperTestCase(unittest.TestCase):
 
         dirize_data_file.assert_called_once_with("Pulse.feeds.json")
 
+    def test_check_owner_accepts_authenticated_owner_user(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        msg = SimpleNamespace(prefix="owner!ident@transient.example")
+        user = MagicMock()
+        user._checkCapability.return_value = True
+
+        with patch.object(
+            pulse_plugin.ircdb,
+            "users",
+            SimpleNamespace(getUser=MagicMock(return_value=user)),
+        ):
+            with patch.object(
+                pulse_plugin.ircdb, "checkCapability", return_value=False
+            ) as check_capability:
+                self.assertTrue(plugin._check_owner(msg))
+
+        user._checkCapability.assert_called_once_with("owner")
+        check_capability.assert_not_called()
+
     def test_state_command_reports_resolved_files_and_loaded_feeds(self):
         plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
         plugin._lock = threading.RLock()
@@ -417,7 +436,8 @@ class PulseHelperTestCase(unittest.TestCase):
             feeds_path.write_text("{}", encoding="utf-8")
             with patch.object(plugin, "_feeds_path", return_value=feeds_path):
                 with patch.object(plugin, "_seen_path", return_value=seen_path):
-                    plugin.state(irc, MagicMock(), [])
+                    with patch.object(plugin, "_check_owner", return_value=True):
+                        plugin.state(irc, MagicMock(), [])
 
         reply = irc.reply.call_args[0][0]
         self.assertIn("Feeds: 1 across 1 network(s)", reply)

@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import supybot.conf as conf
+import supybot.ircdb as ircdb
 import supybot.ircmsgs as ircmsgs
 import supybot.log as log
 import supybot.registry as registry
@@ -142,6 +143,24 @@ class Pulse(callbacks.Plugin):
             target=self._poll_loop, name="PulsePoller", daemon=True
         )
         self._poll_thread.start()
+
+    def _check_owner(self, msg) -> bool:
+        try:
+            user = ircdb.users.getUser(msg.prefix)
+        except KeyError:
+            pass
+        except Exception:
+            return False
+        else:
+            try:
+                return bool(user._checkCapability("owner"))
+            except Exception:
+                return False
+
+        try:
+            return bool(ircdb.checkCapability(msg.prefix, "owner"))
+        except Exception:
+            return False
 
     @property
     def _feeds(self):
@@ -510,6 +529,10 @@ class Pulse(callbacks.Plugin):
 
         Shows the state files Pulse is using and how many feeds are loaded.
         """
+        if not self._check_owner(msg):
+            irc.errorNoCapability("owner", prefixNick=False)
+            return
+
         feeds_path = self._feeds_path()
         seen_path = self._seen_path()
         feeds, seen = self._storage.snapshot_state()
