@@ -55,10 +55,15 @@ class PulseStorage:
     def network_feeds(self, network):
         network = network_key(network)
         with self._lock:
-            if network not in self.feeds and LEGACY_FEEDS_NETWORK in self.feeds:
+            if (
+                network not in self.feeds
+                and LEGACY_FEEDS_NETWORK in self.feeds
+            ):
                 self.feeds[network] = {
                     name: dict(record)
-                    for name, record in self.feeds[LEGACY_FEEDS_NETWORK].items()
+                    for name, record in self.feeds[
+                        LEGACY_FEEDS_NETWORK
+                    ].items()
                     if looks_like_feed_record(record)
                 }
             return self.feeds.setdefault(network, {})
@@ -66,12 +71,17 @@ class PulseStorage:
     def get_feed_record(self, network, name):
         network = network_key(network)
         with self._lock:
-            if network not in self.feeds and LEGACY_FEEDS_NETWORK in self.feeds:
+            if (
+                network not in self.feeds
+                and LEGACY_FEEDS_NETWORK in self.feeds
+            ):
                 record = self.feeds[LEGACY_FEEDS_NETWORK].get(
                     callbacks.canonicalName(name)
                 )
             else:
-                record = self.feeds.get(network, {}).get(callbacks.canonicalName(name))
+                record = self.feeds.get(network, {}).get(
+                    callbacks.canonicalName(name)
+                )
         if record is None:
             return None
         return dict(record)
@@ -79,7 +89,9 @@ class PulseStorage:
     def set_feed_record(self, network, name, record):
         network = network_key(network)
         with self._lock:
-            self.network_feeds(network)[callbacks.canonicalName(name)] = dict(record)
+            self.network_feeds(network)[callbacks.canonicalName(name)] = dict(
+                record
+            )
 
     def delete_feed_record(self, network, name):
         network = network_key(network)
@@ -136,13 +148,17 @@ class PulseStorage:
                 if not network_feeds:
                     self.feeds.pop(network, None)
 
-    def entries_to_announce(self, network, channel, feed_name, entries, maximum):
+    def entries_to_announce(
+        self, network, channel, feed_name, entries, maximum
+    ):
         network = network_key(network)
         channel_key = self.channel_key(network, channel)
         with self._lock:
             channel_state = self.seen.get(channel_key, {})
             seen_ids = set(channel_state.get(feed_name, []))
-        new_entries = [entry for entry in entries if entry["id"] not in seen_ids]
+        new_entries = [
+            entry for entry in entries if entry["id"] not in seen_ids
+        ]
         if not new_entries:
             return []
         self.mark_seen_ids(

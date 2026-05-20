@@ -9,14 +9,18 @@
 Pulse: RSS 2.0 feed polling and announcement plugin for Limnoria.
 """
 
+from typing import Dict, List
+
 import supybot
 from supybot import world
 
 __version__ = "0.2.0"
 
-__author__ = supybot.Author("Barry Suridge", "Alcheri", "barry.suridge@gmail.com")
+__author__ = supybot.Author(
+    "Barry Suridge", "Alcheri", "barry.suridge@gmail.com"
+)
 
-__contributors__ = {}
+__contributors__: Dict[object, List[object]] = {}
 
 __url__ = "https://github.com/Alcheri/Pulse"
 
@@ -34,7 +38,7 @@ reload(rendering)
 reload(plugin)
 
 if world.testing:
-    from . import test
+    from . import test as test
 
 Class = plugin.Class
 configure = config.configure

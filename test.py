@@ -66,6 +66,16 @@ class PulseTestCase(supybot_test.PluginTestCase):
     __test__ = False
     plugins = ("Pulse",)
 
+    @patch("Pulse.plugin.fetch_rss_feed")
+    def test_add_requires_feed_management_capability_before_fetching(
+        self, fetch
+    ):
+        self.assertError(
+            "pulse add bbc https://example.com/rss.xml",
+            frm="tester!foo@bar__no_testcap__baz",
+        )
+        fetch.assert_not_called()
+
 
 class PulseHelperTestCase(unittest.TestCase):
     def test_plugin_module_exports_class(self):
@@ -97,11 +107,40 @@ class PulseHelperTestCase(unittest.TestCase):
         self.assertEqual(parsed["language"], "en-au")
         self.assertEqual(len(parsed["items"]), 2)
         self.assertEqual(parsed["items"][0]["id"], "first-guid")
-        self.assertEqual(parsed["items"][1]["id"], "https://example.com/second")
+        self.assertEqual(
+            parsed["items"][1]["id"], "https://example.com/second"
+        )
 
     def test_parse_rss2_feed_rejects_atom(self):
         with self.assertRaises(feeds.FeedError):
             feeds.parse_rss2_feed(ATOM_SAMPLE)
+
+    def test_parse_rss2_feed_rejects_dtd_markup(self):
+        with self.assertRaisesRegex(feeds.FeedError, "DTD or entity"):
+            feeds.parse_rss2_feed(
+                b'<?xml version="1.0"?><!DOCTYPE rss><rss version="2.0" />'
+            )
+
+    def test_validate_feed_url_rejects_non_http_scheme(self):
+        with self.assertRaisesRegex(feeds.FeedError, "http or https"):
+            feeds.validate_feed_url("file:///etc/passwd")
+
+    def test_validate_feed_url_rejects_private_ip_literal(self):
+        with patch.object(
+            feeds.socket,
+            "getaddrinfo",
+            return_value=[
+                (
+                    feeds.socket.AF_INET,
+                    feeds.socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("127.0.0.1", 80),
+                )
+            ],
+        ):
+            with self.assertRaisesRegex(feeds.FeedError, "external host"):
+                feeds.validate_feed_url("https://127.0.0.1/rss.xml")
 
     def test_prime_subscription_reads_global_backfill_setting(self):
         original_start = threading.Thread.start
@@ -131,6 +170,74 @@ class PulseHelperTestCase(unittest.TestCase):
             "testnet", "#test", "example", ["entry-1", "entry-2"]
         )
         plugin._send_entry.assert_not_called()
+
+    def test_feed_management_allows_admin_or_channel_op(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        irc = SimpleNamespace(isChannel=MagicMock(return_value=True))
+        msg = SimpleNamespace(prefix="user!ident@example", args=["#test"])
+
+        with patch.object(
+            pulse_plugin.ircdb,
+            "checkCapability",
+            side_effect=[False, True],
+        ) as check_capability:
+            with patch.object(
+                pulse_plugin.ircdb,
+                "makeChannelCapability",
+                return_value="#test,op",
+            ) as make_capability:
+                self.assertTrue(
+                    plugin._has_feed_management_capability(irc, msg)
+                )
+
+        self.assertEqual(
+            check_capability.call_args_list[0].args, (msg.prefix, "admin")
+        )
+        make_capability.assert_called_once_with("#test", "op")
+        self.assertEqual(
+            check_capability.call_args_list[1].args, (msg.prefix, "#test,op")
+        )
+
+    def test_feed_management_denies_users_without_admin_or_channel_op(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        irc = MagicMock(network="ChatLounge")
+        msg = SimpleNamespace(args=["#test"], prefix="user!ident@example")
+
+        with patch.object(
+            pulse_plugin.ircdb, "checkCapability", return_value=False
+        ):
+            self.assertFalse(
+                plugin._require_feed_management_capability(irc, msg)
+            )
+
+        irc.error.assert_called_once()
+
+    def test_command_cooldown_is_per_user_and_prunes_expired_entries(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        plugin._lock = threading.RLock()
+        plugin._command_cooldowns = {
+            ("net", "#test", "old!ident@example", "latest"): 1.0
+        }
+        plugin.registryValue = MagicMock(return_value=5)
+        irc = SimpleNamespace(network="net")
+        msg = SimpleNamespace(args=["#test"], prefix="new!ident@example")
+
+        with patch.object(pulse_plugin.time, "monotonic", return_value=10.0):
+            self.assertEqual(plugin._cooldown_remaining(irc, msg, "latest"), 0)
+
+        self.assertNotIn(
+            ("net", "#test", "old!ident@example", "latest"),
+            plugin._command_cooldowns,
+        )
+
+    def test_maximum_announcements_is_hard_capped(self):
+        plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
+        plugin.registryValue = MagicMock(return_value=999)
+
+        self.assertEqual(
+            plugin._maximum_announcements("#test", "ChatLounge"),
+            pulse_plugin.HARD_MAX_ANNOUNCEMENTS,
+        )
 
     def test_refresh_feed_refetches_after_304_when_cache_is_cold(self):
         original_start = threading.Thread.start
@@ -172,7 +279,12 @@ class PulseHelperTestCase(unittest.TestCase):
             pulse_plugin,
             "fetch_rss_feed",
             side_effect=[
-                {"status": 304, "etag": "etag-1", "modified": "old", "body": b""},
+                {
+                    "status": 304,
+                    "etag": "etag-1",
+                    "modified": "old",
+                    "body": b"",
+                },
                 {
                     "status": 200,
                     "etag": "etag-2",
@@ -201,8 +313,12 @@ class PulseHelperTestCase(unittest.TestCase):
             threading.Thread.start = original_start
 
         plugin._feeds = {}
-        plugin._set_feed_record("net1", "example", {"url": "https://net1.example/"})
-        plugin._set_feed_record("net2", "example", {"url": "https://net2.example/"})
+        plugin._set_feed_record(
+            "net1", "example", {"url": "https://net1.example/"}
+        )
+        plugin._set_feed_record(
+            "net2", "example", {"url": "https://net2.example/"}
+        )
 
         self.assertEqual(
             plugin._get_feed_record("net1", "example")["url"],
@@ -250,7 +366,9 @@ class PulseHelperTestCase(unittest.TestCase):
         try:
             plugin = pulse_plugin.Pulse(MagicMock())
 
-            self.assertNotIn(old_plugin._flush_state, pulse_plugin.world.flushers)
+            self.assertNotIn(
+                old_plugin._flush_state, pulse_plugin.world.flushers
+            )
             self.assertIn(plugin._flush_state, pulse_plugin.world.flushers)
             self.assertEqual(len(pulse_plugin._pulse_flushers()), 1)
         finally:
@@ -265,7 +383,9 @@ class PulseHelperTestCase(unittest.TestCase):
 
     def test_format_announce_remove_change_is_clear(self):
         self.assertEqual(
-            rendering.format_announce_change("remove", "#test", ["LimnoriaNews"]),
+            rendering.format_announce_change(
+                "remove", "#test", ["LimnoriaNews"]
+            ),
             "Stopped announcing limnorianews in #test.",
         )
 
@@ -312,7 +432,9 @@ class PulseHelperTestCase(unittest.TestCase):
 
     def test_storage_normalises_network_objects_for_lookup(self):
         store = storage.PulseStorage(threading.RLock())
-        store.feeds = {"ChatLounge": {"bbc": {"url": "https://example.com/rss.xml"}}}
+        store.feeds = {
+            "ChatLounge": {"bbc": {"url": "https://example.com/rss.xml"}}
+        }
 
         self.assertEqual(
             store.get_feed_record(DisplayNetwork(), "bbc"),
@@ -335,7 +457,9 @@ class PulseHelperTestCase(unittest.TestCase):
 
     def test_storage_snapshot_is_isolated_from_live_state(self):
         store = storage.PulseStorage(threading.RLock())
-        store.set_feed_record("net", "example", {"url": "https://example.com/rss.xml"})
+        store.set_feed_record(
+            "net", "example", {"url": "https://example.com/rss.xml"}
+        )
         feeds, seen = store.snapshot_state()
 
         feeds["net"]["example"]["url"] = "https://changed.example/rss.xml"
@@ -356,8 +480,12 @@ class PulseHelperTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             feeds_path = str(Path(tmpdir) / "feeds.json")
             seen_path = str(Path(tmpdir) / "seen.json")
-            with patch.object(plugin, "_feeds_path", return_value=Path(feeds_path)):
-                with patch.object(plugin, "_seen_path", return_value=Path(seen_path)):
+            with patch.object(
+                plugin, "_feeds_path", return_value=Path(feeds_path)
+            ):
+                with patch.object(
+                    plugin, "_seen_path", return_value=Path(seen_path)
+                ):
                     with patch.object(pulse_plugin.log, "warning") as warning:
                         plugin._flush_state()
 
@@ -376,7 +504,9 @@ class PulseHelperTestCase(unittest.TestCase):
                 {"1": "number", "2": "string"},
             )
 
-    def test_write_json_file_keeps_existing_file_on_serialisation_failure(self):
+    def test_write_json_file_keeps_existing_file_on_serialisation_failure(
+        self,
+    ):
         plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -386,7 +516,9 @@ class PulseHelperTestCase(unittest.TestCase):
             with patch.object(pulse_plugin.log, "warning") as warning:
                 plugin._write_json_file(path, {"broken": {"entry-1"}})
 
-            self.assertEqual(path.read_text(encoding="utf-8"), '{"existing": true}\n')
+            self.assertEqual(
+                path.read_text(encoding="utf-8"), '{"existing": true}\n'
+            )
             warning.assert_called_once()
             self.assertIn("could not serialise", warning.call_args[0][0])
 
@@ -398,7 +530,9 @@ class PulseHelperTestCase(unittest.TestCase):
             "_dirize_data_file",
             return_value="pulse-state/Pulse.feeds.json",
         ) as dirize_data_file:
-            self.assertEqual(plugin._feeds_path(), Path("pulse-state/Pulse.feeds.json"))
+            self.assertEqual(
+                plugin._feeds_path(), Path("pulse-state/Pulse.feeds.json")
+            )
 
         dirize_data_file.assert_called_once_with("Pulse.feeds.json")
 
@@ -425,7 +559,9 @@ class PulseHelperTestCase(unittest.TestCase):
         plugin = pulse_plugin.Pulse.__new__(pulse_plugin.Pulse)
         plugin._lock = threading.RLock()
         plugin._storage = storage.PulseStorage(plugin._lock)
-        plugin._storage.feeds = {"ChatLounge": {"bbc": {"url": "https://example/"}}}
+        plugin._storage.feeds = {
+            "ChatLounge": {"bbc": {"url": "https://example/"}}
+        }
         plugin._storage.seen = {"ChatLounge:#test": {"bbc": ["entry-1"]}}
         plugin.log = MagicMock()
         irc = MagicMock(network="ChatLounge")
@@ -436,8 +572,12 @@ class PulseHelperTestCase(unittest.TestCase):
             seen_path = Path(tmpdir) / "Pulse.seen.json"
             feeds_path.write_text("{}", encoding="utf-8")
             with patch.object(plugin, "_feeds_path", return_value=feeds_path):
-                with patch.object(plugin, "_seen_path", return_value=seen_path):
-                    with patch.object(plugin, "_check_owner", return_value=True):
+                with patch.object(
+                    plugin, "_seen_path", return_value=seen_path
+                ):
+                    with patch.object(
+                        plugin, "_check_owner", return_value=True
+                    ):
                         plugin.state(irc, msg, [])
 
         notice = irc.queueMsg.call_args[0][0]
@@ -478,7 +618,9 @@ class PulseHelperTestCase(unittest.TestCase):
             data,
             {
                 "ChatLounge": {
-                    "bbc": {"url": "https://feeds.bbci.co.uk/news/world/rss.xml"}
+                    "bbc": {
+                        "url": "https://feeds.bbci.co.uk/news/world/rss.xml"
+                    }
                 }
             },
         )

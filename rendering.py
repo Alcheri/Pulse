@@ -23,7 +23,9 @@ def format_announce_change(action, channel, feeds):
     if action == "add":
         return f"Now announcing {supybot_format('%L', names)} in {channel}."
     if action == "remove":
-        return f"Stopped announcing {supybot_format('%L', names)} in {channel}."
+        return (
+            f"Stopped announcing {supybot_format('%L', names)} in {channel}."
+        )
     raise ValueError(f"Unknown announce action: {action}")
 
 

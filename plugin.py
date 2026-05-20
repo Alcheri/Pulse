@@ -19,8 +19,9 @@ import supybot.log as log
 import supybot.registry as registry
 import supybot.world as world
 from supybot import callbacks
-from supybot.commands import *
+from supybot.commands import addConverter, many, optional, wrap
 from supybot.i18n import PluginInternationalization
+from supybot.utils.str import format
 
 _ = PluginInternationalization("Pulse")
 
@@ -29,10 +30,8 @@ try:
     from .feeds import clean_text as _clean_text
     from .feeds import fetch_rss_feed
     from .feeds import parse_rss2_feed
-    from .feeds import stable_entry_id as _stable_entry_id
     from .rendering import format_announce_change as _format_announce_change
     from .rendering import render_entry
-    from .storage import LEGACY_FEEDS_NETWORK
     from .storage import PulseStorage
     from .storage import network_key
 except ImportError:
@@ -40,16 +39,16 @@ except ImportError:
     from feeds import clean_text as _clean_text
     from feeds import fetch_rss_feed
     from feeds import parse_rss2_feed
-    from feeds import stable_entry_id as _stable_entry_id
     from rendering import format_announce_change as _format_announce_change
     from rendering import render_entry
-    from storage import LEGACY_FEEDS_NETWORK
     from storage import PulseStorage
     from storage import network_key
 
 FEEDS_FILENAME = "Pulse.feeds.json"
 SEEN_FILENAME = "Pulse.seen.json"
 POLL_TICK_SECONDS = 5
+HARD_MAX_ANNOUNCEMENTS = 10
+MAX_REPLY_CHARS = 420
 
 
 def _is_pulse_flush_state(callback):
@@ -59,7 +58,9 @@ def _is_pulse_flush_state(callback):
 
 
 def _pulse_flushers():
-    return [flusher for flusher in world.flushers if _is_pulse_flush_state(flusher)]
+    return [
+        flusher for flusher in world.flushers if _is_pulse_flush_state(flusher)
+    ]
 
 
 def _dirize_data_file(filename):
@@ -124,16 +125,21 @@ class Pulse(callbacks.Plugin):
         self.__parent.__init__(irc)
         self._lock = threading.RLock()
         self._storage = PulseStorage(self._lock)
+        self._command_cooldowns = {}
         self._stop_event = threading.Event()
         self._load_feeds()
         self._load_seen()
         stale_flushers = [
-            flusher for flusher in _pulse_flushers() if flusher.__self__ is not self
+            flusher
+            for flusher in _pulse_flushers()
+            if flusher.__self__ is not self
         ]
         for flusher in stale_flushers:
             world.flushers.remove(flusher)
         if stale_flushers:
-            log.warning(f"Pulse: removed {len(stale_flushers)} stale state flusher(s)")
+            log.warning(
+                f"Pulse: removed {len(stale_flushers)} stale state flusher(s)"
+            )
         world.flushers.append(self._flush_state)
         log.info(
             f"Pulse: registered state flusher for instance {id(self)}; "
@@ -161,6 +167,82 @@ class Pulse(callbacks.Plugin):
             return bool(ircdb.checkCapability(msg.prefix, "owner"))
         except Exception:
             return False
+
+    def _has_feed_management_capability(self, irc, msg):
+        try:
+            if ircdb.checkCapability(msg.prefix, "admin"):
+                return True
+        except Exception:
+            return False
+
+        channel = msg.args[0] if msg.args else None
+        if not channel or not irc.isChannel(channel):
+            return False
+
+        try:
+            capability = ircdb.makeChannelCapability(channel, "op")
+            return bool(ircdb.checkCapability(msg.prefix, capability))
+        except Exception:
+            return False
+
+    def _require_feed_management_capability(self, irc, msg):
+        if self._has_feed_management_capability(irc, msg):
+            return True
+        irc.error(
+            "This command requires admin capability or channel op capability.",
+            prefixNick=False,
+        )
+        return False
+
+    def _cooldown_remaining(self, irc, msg, command):
+        channel = msg.args[0] if msg.args else ""
+        cooldown = self.registryValue(
+            "commandCooldownSeconds", channel, irc.network
+        )
+        if not cooldown:
+            return 0
+
+        now = time.monotonic()
+        key = (irc.network, channel, msg.prefix, command)
+        with self._lock:
+            expired = [
+                item
+                for item, last_seen in self._command_cooldowns.items()
+                if now - last_seen >= cooldown
+            ]
+            for item in expired:
+                del self._command_cooldowns[item]
+
+            last_seen = self._command_cooldowns.get(key)
+            if last_seen is None or now - last_seen >= cooldown:
+                self._command_cooldowns[key] = now
+                return 0
+            return max(1, int(cooldown - (now - last_seen)))
+
+    def _enforce_command_cooldown(self, irc, msg, command):
+        cooldown = self._cooldown_remaining(irc, msg, command)
+        if not cooldown:
+            return True
+        irc.error(
+            f"Please wait {cooldown}s before using this command again.",
+            prefixNick=False,
+        )
+        return False
+
+    def _safe_reply_text(self, text):
+        return _clean_text(text, limit=MAX_REPLY_CHARS)
+
+    def _reply(self, irc, text):
+        irc.reply(self._safe_reply_text(text), prefixNick=False)
+
+    def _error(self, irc, text):
+        irc.error(self._safe_reply_text(text), prefixNick=False)
+
+    def _maximum_announcements(self, channel, network):
+        configured = self.registryValue(
+            "maximumAnnouncements", channel, network
+        )
+        return min(configured, HARD_MAX_ANNOUNCEMENTS)
 
     @property
     def _feeds(self):
@@ -208,7 +290,8 @@ class Pulse(callbacks.Plugin):
         try:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(
-                    handle, object_pairs_hook=_merge_duplicate_json_object_pairs
+                    handle,
+                    object_pairs_hook=_merge_duplicate_json_object_pairs,
                 )
             duplicates = _pop_duplicate_key_markers(data)
             if duplicates:
@@ -277,7 +360,9 @@ class Pulse(callbacks.Plugin):
         self._storage.load_seen(self._load_json_file(path, {}))
         _, seen = self._storage.snapshot_state()
         channel_count = len(seen)
-        log.info(f"Pulse: loaded seen state for {channel_count} channel(s) from {path}")
+        log.info(
+            f"Pulse: loaded seen state for {channel_count} channel(s) from {path}"
+        )
 
     def _flush_state(self):
         self._storage.prune_empty_networks()
@@ -337,7 +422,9 @@ class Pulse(callbacks.Plugin):
             if cached is None:
                 result = fetch_rss_feed(
                     record["url"],
-                    timeout_seconds=self.registryValue("requestTimeoutSeconds"),
+                    timeout_seconds=self.registryValue(
+                        "requestTimeoutSeconds"
+                    ),
                     max_feed_bytes=self.registryValue("maxFeedBytes"),
                 )
             else:
@@ -391,7 +478,9 @@ class Pulse(callbacks.Plugin):
                     "announceFeeds", channel, irc.network
                 ):
                     name = callbacks.canonicalName(feed_name)
-                    targets.setdefault((irc.network, name), []).append((irc, channel))
+                    targets.setdefault((irc.network, name), []).append(
+                        (irc, channel)
+                    )
         return targets
 
     def _prime_subscription(self, irc, channel, feed_name):
@@ -411,7 +500,7 @@ class Pulse(callbacks.Plugin):
             channel,
             feed_name,
             entries,
-            self.registryValue("maximumAnnouncements", channel, network),
+            self._maximum_announcements(channel, network),
         )
 
     def _send_entry(self, irc, channel, feed_name, entry):
@@ -436,7 +525,10 @@ class Pulse(callbacks.Plugin):
             self._stop_event.wait(POLL_TICK_SECONDS)
 
     def _poll_announced_feeds(self):
-        for (network, feed_name), destinations in self._current_targets().items():
+        for (
+            network,
+            feed_name,
+        ), destinations in self._current_targets().items():
             if not self._get_feed_record(network, feed_name):
                 log.warning(
                     f"Pulse: announced feed {feed_name} is not registered on {network}."
@@ -450,7 +542,9 @@ class Pulse(callbacks.Plugin):
                 record["last_checked"] = time.time()
                 if record:
                     self._set_feed_record(network, feed_name, record)
-                log.warning(f"Pulse: failed to refresh {feed_name} on {network}: {e}")
+                log.warning(
+                    f"Pulse: failed to refresh {feed_name} on {network}: {e}"
+                )
                 continue
 
             for irc, channel in destinations:
@@ -466,9 +560,13 @@ class Pulse(callbacks.Plugin):
         Adds an RSS 2.0 feed to Pulse after validating that the feed can be fetched
         and parsed.
         """
+        if not self._require_feed_management_capability(irc, msg):
+            return
+        if not self._enforce_command_cooldown(irc, msg, "add"):
+            return
         name = callbacks.canonicalName(name)
         if self._get_feed_record(irc.network, name):
-            irc.error(f"Feed {name} already exists.", prefixNick=False)
+            self._error(irc, f"Feed {name} already exists.")
             return
 
         result = fetch_rss_feed(
@@ -494,7 +592,7 @@ class Pulse(callbacks.Plugin):
         )
         self._storage.feed_cache[self._feed_key(irc.network, name)] = parsed
         self._flush_state()
-        irc.reply(f"Added {name}: {parsed['title']}", prefixNick=False)
+        self._reply(irc, f"Added {name}: {parsed['title']}")
 
     add = wrap(add, ["feedName", "url"])
 
@@ -503,9 +601,11 @@ class Pulse(callbacks.Plugin):
 
         Removes a registered feed from Pulse.
         """
+        if not self._require_feed_management_capability(irc, msg):
+            return
         name = callbacks.canonicalName(name)
         if not self._get_feed_record(irc.network, name):
-            irc.error("Unknown feed.", prefixNick=False)
+            self._error(irc, "Unknown feed.")
             return
         self._delete_feed_record(irc.network, name)
         self._storage.remove_feed_from_network_seen(irc.network, name)
@@ -520,7 +620,7 @@ class Pulse(callbacks.Plugin):
         Lists the registered feeds known to Pulse.
         """
         names = sorted(self._network_feeds(irc.network))
-        irc.reply(format("%L", names) or "No feeds are registered.", prefixNick=False)
+        self._reply(irc, format("%L", names) or "No feeds are registered.")
 
     list = wrap(list)
 
@@ -582,7 +682,7 @@ class Pulse(callbacks.Plugin):
         name = callbacks.canonicalName(name)
         record = self._get_feed_record(irc.network, name)
         if not record:
-            irc.error("Unknown feed.", prefixNick=False)
+            self._error(irc, "Unknown feed.")
             return
 
         last_checked = record.get("last_checked", 0)
@@ -602,7 +702,7 @@ class Pulse(callbacks.Plugin):
         last_error = _clean_text(record.get("last_error", ""), limit=120)
         if last_error:
             bits.append(f"Last error: {last_error}")
-        irc.reply(" | ".join(bits), prefixNick=False)
+        self._reply(irc, " | ".join(bits))
 
     show = wrap(show, ["feedName"])
 
@@ -615,22 +715,26 @@ class Pulse(callbacks.Plugin):
         if count is None:
             count = 1
         if count < 1 or count > 10:
-            irc.error("Count must be between 1 and 10.", prefixNick=False)
+            self._error(irc, "Count must be between 1 and 10.")
+            return
+        if not self._enforce_command_cooldown(irc, msg, "latest"):
             return
 
         try:
             parsed = self._refresh_feed(irc.network, name, force=True)
         except FeedError as e:
-            irc.error(str(e), prefixNick=False)
+            self._error(irc, str(e))
             return
 
         items = parsed["items"][:count]
         if not items:
-            irc.error("The feed returned no items.", prefixNick=False)
+            self._error(irc, "The feed returned no items.")
             return
         irc.replies(
             [
-                self._render_entry(name, entry, msg.args[0], irc.network)
+                self._safe_reply_text(
+                    self._render_entry(name, entry, msg.args[0], irc.network)
+                )
                 for entry in items
             ],
             joiner=" | ",
@@ -644,12 +748,14 @@ class Pulse(callbacks.Plugin):
 
         Forces a refresh of one feed, or all registered feeds if no name is given.
         """
+        if not self._enforce_command_cooldown(irc, msg, "refresh"):
+            return
         if name:
             feed_names = [callbacks.canonicalName(name)]
         else:
             feed_names = sorted(self._network_feeds(irc.network))
         if not feed_names:
-            irc.error("No feeds are registered.", prefixNick=False)
+            self._error(irc, "No feeds are registered.")
             return
 
         refreshed = 0
@@ -663,17 +769,16 @@ class Pulse(callbacks.Plugin):
             refreshed += 1
 
         if failures and not refreshed:
-            irc.error(" | ".join(failures), prefixNick=False)
+            self._error(irc, " | ".join(failures))
             return
 
         if failures:
-            irc.reply(
+            self._reply(
                 f"Refreshed {refreshed} feed(s). Failures: {' | '.join(failures)}",
-                prefixNick=False,
             )
             return
 
-        irc.reply(f"Refreshed {refreshed} feed(s).", prefixNick=False)
+        self._reply(irc, f"Refreshed {refreshed} feed(s).")
 
     refresh = wrap(refresh, [optional("feedName")])
 
@@ -685,9 +790,12 @@ class Pulse(callbacks.Plugin):
             <channel> is omitted, Pulse uses the current channel.
             """
             announce = conf.supybot.plugins.Pulse.announceFeeds
-            feeds = sorted(announce.getSpecific(channel=channel, network=irc.network)())
-            irc.reply(
-                format("%L", feeds) or "No feeds are announced there.", prefixNick=False
+            feeds = sorted(
+                announce.getSpecific(channel=channel, network=irc.network)()
+            )
+            plugin = irc.getCallback("Pulse")
+            plugin._reply(
+                irc, format("%L", feeds) or "No feeds are announced there."
             )
 
         list = wrap(list, ["channel"])
@@ -702,14 +810,18 @@ class Pulse(callbacks.Plugin):
             """
             plugin = irc.getCallback("Pulse")
             invalid = [
-                feed for feed in feeds if not plugin._get_feed_record(irc.network, feed)
+                feed
+                for feed in feeds
+                if not plugin._get_feed_record(irc.network, feed)
             ]
             if invalid:
-                irc.error(format("Unknown feeds: %L", invalid), prefixNick=False)
+                plugin._error(irc, format("Unknown feeds: %L", invalid))
                 return
 
             announce = conf.supybot.plugins.Pulse.announceFeeds
-            current = announce.getSpecific(channel=channel, network=irc.network)()
+            current = announce.getSpecific(
+                channel=channel, network=irc.network
+            )()
             for feed in feeds:
                 current.add(callbacks.canonicalName(feed))
             announce.getSpecific(
@@ -717,9 +829,11 @@ class Pulse(callbacks.Plugin):
             ).setValue(current)
 
             for feed in feeds:
-                plugin._prime_subscription(irc, channel, callbacks.canonicalName(feed))
+                plugin._prime_subscription(
+                    irc, channel, callbacks.canonicalName(feed)
+                )
             plugin._flush_state()
-            irc.reply(_format_announce_change("add", channel, feeds), prefixNick=False)
+            plugin._reply(irc, _format_announce_change("add", channel, feeds))
 
         add = wrap(add, [("checkChannelCapability", "op"), many("feedName")])
 
@@ -731,7 +845,9 @@ class Pulse(callbacks.Plugin):
             """
             plugin = irc.getCallback("Pulse")
             announce = conf.supybot.plugins.Pulse.announceFeeds
-            current = announce.getSpecific(channel=channel, network=irc.network)()
+            current = announce.getSpecific(
+                channel=channel, network=irc.network
+            )()
             for feed in feeds:
                 name = callbacks.canonicalName(feed)
                 current.discard(name)
@@ -740,11 +856,13 @@ class Pulse(callbacks.Plugin):
                 channel=channel, network=irc.network, fallback_to_channel=False
             ).setValue(current)
             plugin._flush_state()
-            irc.reply(
-                _format_announce_change("remove", channel, feeds), prefixNick=False
+            plugin._reply(
+                irc, _format_announce_change("remove", channel, feeds)
             )
 
-        remove = wrap(remove, [("checkChannelCapability", "op"), many("feedName")])
+        remove = wrap(
+            remove, [("checkChannelCapability", "op"), many("feedName")]
+        )
 
 
 Class = Pulse

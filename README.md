@@ -94,6 +94,7 @@ Channel values:
 | `plugins.Pulse.enabled` | `False` | Enables announcements in the channel. |
 | `plugins.Pulse.announceFeeds` | empty | Feed names announced in the channel. Usually managed with `@pulse announce add/remove`. |
 | `plugins.Pulse.maximumAnnouncements` | `3` | Maximum new items announced per feed check. |
+| `plugins.Pulse.commandCooldownSeconds` | `5` | Per-user cooldown for commands that fetch feeds on demand. |
 | `plugins.Pulse.announceAsNotice` | `False` | Sends feed announcements as notices instead of channel messages. |
 | `plugins.Pulse.headlineFormat` | `$feed: $title <$link>` | Template for feed headlines and announcements. |
 
@@ -110,6 +111,9 @@ Channel values:
 @pulse announce add [#channel] <feed> [feed...]
 @pulse announce remove [#channel] <feed> [feed...]
 ```
+
+`add` and `remove` require bot admin capability or channel op capability in the
+current channel. Feed URLs must point to external HTTP(S) RSS sources.
 
 ## Notes
 

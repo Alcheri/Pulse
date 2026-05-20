@@ -35,6 +35,12 @@ extend-exclude = '''
 [tool.pytest.ini_options]
 python_files = ["test.py"]
 
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+explicit_package_bases = true
+exclude = "(__init__|test|conftest)\\.py"
+
 [tool.setuptools.package-dir]
 "limnoria_pulse" = "."
 "limnoria_pulse.local" = "local/"

@@ -12,7 +12,9 @@ try:
 
     _ = PluginInternationalization("Pulse")
 except ImportError:
-    _ = lambda x: x
+
+    def _(text):
+        return text
 
 
 def configure(advanced):
@@ -58,9 +60,11 @@ conf.registerGlobalValue(
     "initialBackfillCount",
     registry.NonNegativeInteger(
         0,
-        _("""Sets how many existing items Pulse announces when a feed is first added
+        _(
+            """Sets how many existing items Pulse announces when a feed is first added
             to a channel's announce list. A value of 0 marks existing items as seen
-            without announcing them."""),
+            without announcing them."""
+        ),
     ),
 )
 
@@ -84,7 +88,18 @@ conf.registerChannelValue(
     Pulse,
     "maximumAnnouncements",
     registry.PositiveInteger(
-        3, _("""Sets the maximum number of new feed items announced at once.""")
+        3,
+        _("""Sets the maximum number of new feed items announced at once. Pulse
+            also applies an internal hard cap."""),
+    ),
+)
+
+conf.registerChannelValue(
+    Pulse,
+    "commandCooldownSeconds",
+    registry.NonNegativeInteger(
+        5,
+        _("""Sets the per-user cooldown for network-fetching commands."""),
     ),
 )
 
@@ -92,7 +107,8 @@ conf.registerChannelValue(
     Pulse,
     "announceAsNotice",
     registry.Boolean(
-        False, _("""Determines whether feed announcements are sent as notices.""")
+        False,
+        _("""Determines whether feed announcements are sent as notices."""),
     ),
 )
 
