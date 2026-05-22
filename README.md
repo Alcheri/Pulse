@@ -2,9 +2,14 @@
 
 # Pulse
 
-[![Tests](https://github.com/Alcheri/WorldTime/actions/workflows/tests.yml/badge.svg?branch=Limnoria-WorldTime)](https://github.com/Alcheri/WorldTime/actions/workflows/tests.yml)
-[![Lint](https://github.com/Alcheri/WorldTime/actions/workflows/lint.yml/badge.svg?branch=Limnoria-WorldTime)](https://github.com/Alcheri/WorldTime/actions/workflows/lint.yml)
-[![CodeQL](https://github.com/Alcheri/WorldTime/actions/workflows/codeql.yml/badge.svg?branch=Limnoria-WorldTime)](https://github.com/Alcheri/WorldTime/actions/workflows/codeql.yml)
+<!-- README_HEADER:start -->
+[![Tests][tests-badge]][tests-link]
+[![Lint][lint-badge]][lint-link]
+[![CodeQL][codeql-badge]][codeql-link]
+![Python][python-badge]
+![Black][black-badge]
+![Limnoria][limnoria-badge]
+<!-- README_HEADER:end -->
 
 <p>
   <em>RSS 2.0 feed polling and announcement plugin for Limnoria.</em>
@@ -126,3 +131,17 @@ current channel. Feed URLs must point to external HTTP(S) RSS sources.
   status reporting.
 
 This project is licensed under the BSD 3-Clause Licence. See the [LICENCE](LICENCE.md) file for details.
+
+<!-- Badge reference definitions -->
+[tests-badge]: https://github.com/Alcheri/Pulse/actions/workflows/tests.yml/badge.svg
+[tests-link]: https://github.com/Alcheri/Pulse/actions/workflows/tests.yml
+
+[lint-badge]: https://github.com/Alcheri/Pulse/actions/workflows/lint.yml/badge.svg
+[lint-link]: https://github.com/Alcheri/Pulse/actions/workflows/lint.yml
+
+[codeql-badge]: https://github.com/Alcheri/Pulse/actions/workflows/codeql.yml/badge.svg
+[codeql-link]: https://github.com/Alcheri/Pulse/security/code-scanning
+
+[python-badge]: https://img.shields.io/badge/python-3.11.2-blue.svg
+[black-badge]: https://img.shields.io/badge/code%20style-black-000000.svg
+[limnoria-badge]: https://img.shields.io/badge/limnoria-compatible-brightgreen.svg
