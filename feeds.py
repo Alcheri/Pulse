@@ -117,6 +117,12 @@ def validate_feed_url(url):
     return url
 
 
+class ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_feed_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def parse_rss2_feed(xml_bytes):
     if FORBIDDEN_XML_MARKUP_RE.search(xml_bytes):
         raise FeedError(
@@ -187,10 +193,9 @@ def fetch_rss_feed(
         headers["If-Modified-Since"] = modified
 
     request = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(ValidatingRedirectHandler)
     try:
-        response = urllib.request.urlopen(  # nosec B310
-            request, timeout=timeout_seconds
-        )
+        response = opener.open(request, timeout=timeout_seconds)  # nosec B310
     except urllib.error.HTTPError as e:
         if e.code == 304:
             return {

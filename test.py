@@ -142,6 +142,33 @@ class PulseHelperTestCase(unittest.TestCase):
             with self.assertRaisesRegex(feeds.FeedError, "external host"):
                 feeds.validate_feed_url("https://127.0.0.1/rss.xml")
 
+    def test_redirect_handler_rejects_private_redirect_target(self):
+        handler = feeds.ValidatingRedirectHandler()
+        request = feeds.urllib.request.Request("https://example.com/rss.xml")
+
+        with patch.object(
+            feeds.socket,
+            "getaddrinfo",
+            return_value=[
+                (
+                    feeds.socket.AF_INET,
+                    feeds.socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("127.0.0.1", 80),
+                )
+            ],
+        ):
+            with self.assertRaisesRegex(feeds.FeedError, "external host"):
+                handler.redirect_request(
+                    request,
+                    None,
+                    302,
+                    "Found",
+                    {},
+                    "http://127.0.0.1/rss.xml",
+                )
+
     def test_prime_subscription_reads_global_backfill_setting(self):
         original_start = threading.Thread.start
         threading.Thread.start = lambda self: None
