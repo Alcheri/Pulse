@@ -1,8 +1,8 @@
 <!-- Pulse: RSS 2.0 feed and announcement plugin for Limnoria. -->
 
-# Pulse
+# <img src="docs/images/pulse.svg" alt="" width="48" height="48" align="absmiddle"> Pulse
 
-<!-- README_HEADER:start -->
+  <!-- README_HEADER:start -->
 [![Tests][tests-badge]][tests-link]
 [![Lint][lint-badge]][lint-link]
 [![CodeQL][codeql-badge]][codeql-link]
